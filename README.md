@@ -29,7 +29,9 @@ pip install -e .
 python mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
+  --batch=256 \
   --epochs=15 \
+  --device 0,1 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp10-small-obj-optimized"
@@ -43,7 +45,9 @@ Quick test with minimal epochs / 快速測試（最少輪數）：
 python mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
+  --batch=128 \
   --epochs=3 \
+  --device 0 \
   --wandb \
   --project="test-project" \
   --exp_name="test-exp"
@@ -82,7 +86,8 @@ python mycodes/train_yolo.py <model> <database> [options]
 | `--db_version` | `1` | Dataset version: `1`, `2`, `3` |
 | `--es` | - | Use Endoscopy dataset suffix |
 | `--epochs` | `50` | Training epochs |
-| `--batch` | `16` | Batch size |
+| `--batch` | `16` | Batch size (adjust based on GPU memory / 根據 GPU 記憶體調整) |
+| `--device` | `cuda:0` | Device(s): `0`, `0,1`, `0,1,2,3` for multi-GPU / 多 GPU |
 | `--imgsz` | `640` | Image size: `640`, `1280`, etc. |
 | `--wandb` | - | Enable Wandb logging |
 | `--project` | auto | Wandb project name |
@@ -95,6 +100,16 @@ python mycodes/train_yolo.py <model> <database> [options]
 | `--use_focal_loss` | - | Enable Focal Loss for small objects |
 | `--use_dim_weights` | - | Enable dimension-specific weights |
 | `--dim_weights` | - | `W_L W_T W_R W_B` (e.g., `5.0 1.0 5.0 1.0`) |
+
+**Hardware Configuration / 硬體配置：**
+- **Multi-GPU Training / 多 GPU 訓練**:
+  - Use `--device 0,1` for 2 GPUs / 使用 2 個 GPU
+  - Use `--device 0,1,2,3` for 4 GPUs / 使用 4 個 GPU
+  - Batch size will be distributed across GPUs / Batch size 會分散到各 GPU
+- **Batch Size / 批次大小**:
+  - Adjust `--batch` based on GPU memory / 根據 GPU 記憶體調整
+  - Example: `--batch=256` for large GPU memory / 大 GPU 記憶體範例
+  - With multi-GPU, effective batch size = `--batch × num_GPUs` / 多 GPU 時，有效批次大小 = `--batch × GPU 數量`
 
 **Ultrasound-specific / 超音波專用設定：**
 - `--hsv_h=0` (grayscale images / 灰階影像)
