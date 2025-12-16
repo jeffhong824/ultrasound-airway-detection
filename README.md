@@ -103,6 +103,48 @@ ultrasound-airway-detection/
 
 ---
 
+## 📥 Dataset Download / 資料集下載
+
+Datasets are not included in the repository. Download from Google Drive:
+
+資料集不包含在倉庫中。從 Google Drive 下載：
+
+```bash
+# Install gdown
+pip install gdown
+
+# Option 1: Download complete dataset / 下載完整資料集
+gdown 1Y8Ow9JHqeASeB7Mg4QbAQQPL0RYB8iJB -O yolo_dataset.zip --fuzzy
+unzip yolo_dataset.zip -d .
+
+# Option 2: Download individual datasets / 下載個別資料集
+mkdir -p yolo_dataset
+cd yolo_dataset
+
+# Download det_123
+gdown 1zKJuabh1PygMH9H3eYq4djTYu3kk7KaP -O det_123.zip --fuzzy
+unzip det_123.zip
+
+# Download det_678
+gdown 1Le-DAEpLFSQpcPHn7bdvbLYYe1-4TV-C -O det_678.zip --fuzzy
+unzip det_678.zip
+
+# Verify structure
+ls
+# Should see: det_123/, det_678/, seg_45/ (if you downloaded complete dataset)
+```
+
+**Links / 連結：**
+- Complete dataset / 完整資料集: https://drive.google.com/file/d/1Y8Ow9JHqeASeB7Mg4QbAQQPL0RYB8iJB/view
+- det_123.zip: https://drive.google.com/file/d/1zKJuabh1PygMH9H3eYq4djTYu3kk7KaP/view
+- det_678.zip: https://drive.google.com/file/d/1Le-DAEpLFSQpcPHn7bdvbLYYe1-4TV-C/view
+
+**Note / 注意：**
+- `--fuzzy` required for files >100MB / 大檔案需要 `--fuzzy` 參數
+- Ensure sufficient disk space / 確保有足夠的磁碟空間
+
+---
+
 ## 🔧 Configuration / 設定
 
 ### Environment Variables / 環境變數
