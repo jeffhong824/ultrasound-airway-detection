@@ -1,9 +1,27 @@
 from pathlib import Path
+import os
+
+# Load environment variables from .env file / 從 .env 檔案載入環境變數
+try:
+    from dotenv import load_dotenv
+    # Load .env file from ultralytics directory / 從 ultralytics 目錄載入 .env 檔案
+    env_path = Path(__file__).parent.parent / 'ultralytics' / '.env'
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+except ImportError:
+    # python-dotenv not installed, skip / 未安裝 python-dotenv，跳過
+    pass
+
+# Get project root from environment variable / 從環境變數獲取專案根目錄
+PROJECT_ROOT = os.getenv('PROJECT_ROOT')
+if not PROJECT_ROOT:
+    # Fallback: try to detect from script location / 備選：嘗試從腳本位置偵測
+    PROJECT_ROOT = str(Path(__file__).parent.parent.resolve())
 
 # 設定參數
 dataset_dir = Path("./seg_45/v1/")  # 含 train/val/test.txt 的資料夾
 old_prefix = "/root/ultrasound/DifficultAirway/"
-new_prefix = "D:/workplace/project_management/github_project/ultrasound-airway-detection/"
+new_prefix = str(Path(PROJECT_ROOT).resolve()) + "/"  # Use PROJECT_ROOT from .env / 使用 .env 中的 PROJECT_ROOT
 
 # 可處理的檔案列表
 split_files = ["train.txt", "val.txt", "test.txt"]

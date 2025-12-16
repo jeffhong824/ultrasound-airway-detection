@@ -35,11 +35,30 @@ python mycodes/train_yolo.py yolo11n det_123 \
   --exp_name="exp10-small-obj-optimized"
 ```
 
+### Test Example / 測試範例
+
+Quick test with minimal epochs / 快速測試（最少輪數）：
+
+```bash
+python mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --epochs=3 \
+  --wandb \
+  --project="test-project" \
+  --exp_name="test-exp"
+```
+
 ### Find Best Epoch / 查找最佳 Epoch
 
 ```bash
+# For production training / 正式訓練
 python mycodes/best_epoch.py detect 1 \
   --run_name="yolo11n-det_123-v3-exp10-small-obj-optimized"
+
+# For test training / 測試訓練
+python mycodes/best_epoch.py detect 1 \
+  --run_name="yolo11n-det_123-v3-test-exp"
 ```
 
 ---
@@ -110,24 +129,24 @@ Datasets are not included in the repository. Download from Google Drive:
 資料集不包含在倉庫中。從 Google Drive 下載：
 
 ```bash
-# Install gdown
-pip install gdown
+# Install dependencies
+pip install gdown tqdm
 
 # Option 1: Download complete dataset / 下載完整資料集
 gdown 1Y8Ow9JHqeASeB7Mg4QbAQQPL0RYB8iJB -O yolo_dataset.zip --fuzzy
-unzip yolo_dataset.zip -d .
+python -c "from tqdm import tqdm; import zipfile; z=zipfile.ZipFile('yolo_dataset.zip'); z.extractall('.', members=tqdm(z.namelist(), desc='Extracting', unit='files'))"
 
 # Option 2: Download individual datasets / 下載個別資料集
 mkdir -p yolo_dataset
 cd yolo_dataset
 
-# Download det_123
+# Download det_123 (with progress bar / 顯示進度條)
 gdown 1zKJuabh1PygMH9H3eYq4djTYu3kk7KaP -O det_123.zip --fuzzy
-unzip det_123.zip
+python -c "from tqdm import tqdm; import zipfile; z=zipfile.ZipFile('det_123.zip'); z.extractall('.', members=tqdm(z.namelist(), desc='Extracting det_123', unit='files'))"
 
-# Download det_678
+# Download det_678 (with progress bar / 顯示進度條)
 gdown 1Le-DAEpLFSQpcPHn7bdvbLYYe1-4TV-C -O det_678.zip --fuzzy
-unzip det_678.zip
+python -c "from tqdm import tqdm; import zipfile; z=zipfile.ZipFile('det_678.zip'); z.extractall('.', members=tqdm(z.namelist(), desc='Extracting det_678', unit='files'))"
 
 # Verify structure
 ls
@@ -139,9 +158,51 @@ ls
 - det_123.zip: https://drive.google.com/file/d/1zKJuabh1PygMH9H3eYq4djTYu3kk7KaP/view
 - det_678.zip: https://drive.google.com/file/d/1Le-DAEpLFSQpcPHn7bdvbLYYe1-4TV-C/view
 
+### Download Model Weights / 下載模型權重
+
+```bash
+# Download yolo11n.pt pretrained weights
+gdown 1f8tmI2Jo9rMTPMl0X4cYcVSzHguckAs8 -O ultralytics/weights/yolo11n.pt --fuzzy
+
+# Other weights (yolo11s, yolo11m, etc.) can be downloaded from Ultralytics official releases
+# 其他權重（yolo11s, yolo11m 等）可從 Ultralytics 官方版本下載
+```
+
+**Weights link / 權重連結：**
+- yolo11n.pt: https://drive.google.com/file/d/1f8tmI2Jo9rMTPMl0X4cYcVSzHguckAs8/view
+
 **Note / 注意：**
 - `--fuzzy` required for files >100MB / 大檔案需要 `--fuzzy` 參數
+- Extraction uses Python + tqdm for progress bar (quiet, no verbose logs) / 解壓使用 Python + tqdm 顯示進度條（安靜模式，無冗長日誌）
+- If tqdm not installed: `pip install tqdm` / 若未安裝 tqdm：`pip install tqdm`
+- Alternative: use `unzip -q file.zip` for quiet extraction without progress / 替代方案：使用 `unzip -q file.zip` 安靜解壓（無進度條）
 - Ensure sufficient disk space / 確保有足夠的磁碟空間
+
+### Setup Paths for New Machine / 新電腦路徑設置
+
+After downloading datasets and weights, update all paths for your machine:
+
+下載資料集和權重後，更新路徑以適配您的電腦：
+
+```bash
+# Run setup script to update all paths
+bash setup_paths.sh
+```
+
+This script automatically updates:
+此腳本會自動更新：
+
+- ✅ `.env` file `PROJECT_ROOT` variable / `.env` 檔案中的 `PROJECT_ROOT` 變數
+- ✅ All YAML files `path:` field / 所有 YAML 檔案的 `path:` 欄位
+- ✅ All split files (train.txt, val.txt, test.txt, train_ES.txt, val_ES.txt, test_ES.txt) / 所有分割檔案
+- ✅ Handles all datasets: det_123, det_678, seg_45 / 處理所有資料集
+- ✅ Processes all versions: v1, v2, v3 / 處理所有版本
+
+The script detects the current project root directory and:
+腳本會自動偵測當前專案根目錄並：
+
+- Updates `PROJECT_ROOT` in `.env` (used by `train_yolo.py` and `process_path.py`) / 更新 `.env` 中的 `PROJECT_ROOT`（由 `train_yolo.py` 和 `process_path.py` 使用）
+- Replaces old paths in split files and YAML files / 替換分割檔案和 YAML 檔案中的舊路徑
 
 ---
 
@@ -153,10 +214,20 @@ Copy and edit `.env.example`:
 
 ```bash
 cp ultralytics/.env.example ultralytics/.env
-# Edit .env and add your Wandb API key
+# Edit .env and set:
+# - PROJECT_ROOT: your project root directory path
+# - WANDB_API_KEY: your Wandb API key
 ```
 
-Get Wandb API key: https://wandb.ai/authorize
+**Required variables / 必須變數：**
+- `PROJECT_ROOT`: Project root directory path / 專案根目錄路徑
+  - Used by `train_yolo.py` and `process_path.py` / 由 `train_yolo.py` 和 `process_path.py` 使用
+  - Example: `PROJECT_ROOT=D:/workplace/project_management/github_project/ultrasound-airway-detection2`
+- `WANDB_API_KEY`: Wandb API key (get from https://wandb.ai/authorize)
+
+**Note / 注意：**
+- The `setup_paths.sh` script will automatically update `PROJECT_ROOT` in `.env` / `setup_paths.sh` 腳本會自動更新 `.env` 中的 `PROJECT_ROOT`
+- Install `python-dotenv` if not already installed: `pip install python-dotenv` / 如果未安裝請安裝：`pip install python-dotenv`
 
 ---
 

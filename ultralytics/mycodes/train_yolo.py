@@ -4,8 +4,20 @@ import wandb
 import logging
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from ultralytics import YOLO
 from typing import Dict, List, Optional
+
+# Load environment variables from .env file / 從 .env 檔案載入環境變數
+try:
+    from dotenv import load_dotenv
+    # Load .env file from ultralytics directory / 從 ultralytics 目錄載入 .env 檔案
+    env_path = Path(__file__).parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+except ImportError:
+    # python-dotenv not installed, skip / 未安裝 python-dotenv，跳過
+    pass
 
 def log_train_metrics(trainer):
     """回调函数：在每个epoch结束时记录训练指标到W&B"""
@@ -220,9 +232,16 @@ if __name__=='__main__':
     if args.runs_num==1:
         args.runs_num = ''
 
-    # Updated path for Windows
-    DA_folder = r'D:\workplace\project_management\github_project\ultrasound-airway-detection2'
-    assert os.path.isdir(DA_folder), f'DA_folder not exist: {DA_folder}'
+    # Get project root from environment variable / 從環境變數獲取專案根目錄
+    DA_folder = os.getenv('PROJECT_ROOT')
+    if not DA_folder:
+        # Fallback: try to detect from script location / 備選：嘗試從腳本位置偵測
+        script_dir = Path(__file__).resolve().parent.parent.parent
+        DA_folder = str(script_dir)
+    
+    # Ensure path uses forward slashes for cross-platform compatibility / 確保路徑使用正斜線以跨平台兼容
+    DA_folder = str(Path(DA_folder).resolve())
+    assert os.path.isdir(DA_folder), f'DA_folder not exist: {DA_folder}. Please set PROJECT_ROOT in .env file.'
     if args.model!='runs':
         # Load a COCO-pretrained model
         mdl_file = os.path.join(DA_folder, 'ultralytics', 'weights', f'{args.model}.pt')
@@ -446,8 +465,8 @@ if __name__=='__main__':
         mixup=args.mixup,
         copy_paste=args.copy_paste,
         # Detection parameters
-        conf=args.conf,
-        iou=args.iou,
+        conf=args.conf if args.conf is not None else 0.25,  # Default confidence threshold
+        iou=args.iou if args.iou is not None else 0.45,    # Default IoU threshold for NMS
         max_det=args.max_det,
         half=args.half,
         agnostic_nms=args.agnostic_nms,
