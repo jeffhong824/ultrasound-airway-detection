@@ -1,0 +1,15 @@
+python mycodes/train_yolo11.py yolo8n-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo8s-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo8m-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo8l-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo8x-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo11n-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo11s-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo11m-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo11l-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo11x-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo12n-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo12s-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo12m-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo12l-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb
+python mycodes/train_yolo11.py yolo12x-seg seg_45 --db_version=1 --device=cuda:0 --batch=16 --imgsz=640 --epochs=100 --wandb

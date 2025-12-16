@@ -1,0 +1,65 @@
+# Data directories (large files - 106 GB)
+yolo_dataset/
+
+# Training outputs
+ultralytics/runs/
+ultralytics/wandb/
+ultralytics/pred_video/
+ultralytics/exports/
+
+# Model weights
+ultralytics/weights/
+ultralytics/yolo_model_weights/
+ultralytics/*.pt
+*.pt
+*.weights
+*.onnx
+*.engine
+*.torchscript
+*.tflite
+*.h5
+*.mlmodel
+*.mlpackage
+*.mnn
+*.rknn
+
+# Training results
+training_results.xlsx
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Environment and IDE
+.env
+.venv
+venv/
+ENV/
+env/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+
+# Dataset cache files
+*.cache
+*.joblib
+
