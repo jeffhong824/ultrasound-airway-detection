@@ -25,8 +25,10 @@ pip install -e .
 
 ### Train / 訓練
 
+**Basic Training / 基本訓練**:
+
 ```bash
-python mycodes/train_yolo.py yolo11n det_123 \
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=256 \
@@ -37,12 +39,314 @@ python mycodes/train_yolo.py yolo11n det_123 \
   --exp_name="exp10-small-obj-optimized"
 ```
 
+**With HMD Loss / 啟用 HMD Loss** (for `det_123` database only / 僅適用於 `det_123` 資料庫):
+
+**Simplified / 簡化版** (using default values / 使用預設值):
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+  --db_version=3 \
+  --es \
+  --epochs=15 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-small-obj" \
+  --exp_name="exp100-hmd_loss" \
+  --use_hmd_loss
+```
+
+**Full Command / 完整命令** (with all parameters / 包含所有參數):
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+  --db_version=3 \
+  --es \
+  --epochs=15 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-small-obj" \
+  --exp_name="exp100-hmd_loss" \
+  --use_hmd_loss \
+  --hmd_loss_weight 0.1 \
+  --hmd_penalty_single 500.0 \
+  --hmd_penalty_none 1000.0 \
+  --hmd_penalty_coeff 0.5
+```
+
+### HMD Loss 設計說明 / HMD Loss Design
+
+#### 1. HMD (Hyomental Distance) 定義
+
+HMD 是超音波影像中用於評估困難呼吸道的重要指標，計算 Mentum（下頜骨）和 Hyoid（舌骨）兩個解剖結構之間的距離。
+
+**計算公式**：
+```python
+# 從兩個 bounding box 計算 HMD
+def calculate_hmd(mentum_box, hyoid_box):
+    # mentum_box 和 hyoid_box 格式: [x1, y1, x2, y2] (像素座標)
+    mentum_x1, mentum_y1, mentum_x2, mentum_y2 = mentum_box
+    hyoid_x1, hyoid_y1, hyoid_x2, hyoid_y2 = hyoid_box
+    
+    # X 方向距離：Hyoid 左邊界 - Mentum 右邊界
+    hmd_dx = hyoid_x1 - mentum_x2
+    
+    # Y 方向距離：兩個 box 中心點的 Y 座標差
+    mentum_y_center = (mentum_y1 + mentum_y2) / 2
+    hyoid_y_center = (hyoid_y1 + hyoid_y2) / 2
+    hmd_dy = hyoid_y_center - mentum_y_center
+    
+    # 歐幾里得距離
+    hmd = sqrt(hmd_dx² + hmd_dy²)
+    return hmd
+```
+
+#### 2. HMD Loss 設計原理
+
+HMD Loss 是一個輔助損失函數，旨在優化模型對 HMD 距離的預測準確性。它與標準檢測損失（box loss, cls loss, dfl loss）結合使用：
+
+```
+總損失 = 標準檢測損失 + λ_hmd × HMD_loss
+```
+
+其中：
+- `標準檢測損失` = box_loss + cls_loss + dfl_loss
+- `λ_hmd` = `--hmd_loss_weight`（預設 0.1）
+- `HMD_loss` = 加權平均的 HMD 誤差
+
+#### 3. HMD Loss 計算邏輯
+
+HMD Loss 針對每張影像的三種情況進行處理：
+
+##### 情況 1：兩個目標都檢測到（最佳情況）
+
+當模型同時檢測到 Mentum 和 Hyoid，且 Ground Truth 中也存在這兩個目標時：
+
+```python
+# 計算預測的 HMD 和 Ground Truth 的 HMD
+pred_hmd = calculate_hmd(pred_mentum_box, pred_hyoid_box)
+gt_hmd = calculate_hmd(gt_mentum_box, gt_hyoid_box)
+
+# HMD 誤差 = |預測 HMD - 真實 HMD|
+hmd_error = abs(pred_hmd - gt_hmd)
+
+# 權重 = Mentum 置信度 × Hyoid 置信度
+weight = confidence_mentum × confidence_hyoid
+```
+
+**程式碼實作**（`ultralytics/utils/loss.py`）：
+```python
+if has_mentum_pred and has_hyoid_pred and has_mentum_target and has_hyoid_target:
+    # 選擇置信度最高的預測框
+    mentum_idx = argmax(mentum_confidences)
+    hyoid_idx = argmax(hyoid_confidences)
+    
+    # 計算 HMD
+    pred_hmd = self._calculate_hmd_from_boxes(
+        pred_boxes_fg[mentum_idx], pred_boxes_fg[hyoid_idx]
+    )
+    gt_hmd = self._calculate_hmd_from_boxes(
+        target_boxes_fg[mentum_target_idx], target_boxes_fg[hyoid_target_idx]
+    )
+    
+    # 誤差和權重
+    hmd_error = abs(pred_hmd - gt_hmd)
+    weight = pred_conf_fg[mentum_idx, mentum_class] * pred_conf_fg[hyoid_idx, hyoid_class]
+```
+
+##### 情況 2：只檢測到一個目標（部分漏檢）
+
+當模型只檢測到 Mentum 或 Hyoid 其中一個時：
+
+```python
+# 使用固定懲罰值
+hmd_error = penalty_single  # 預設 500.0 像素
+
+# 權重 = min(mentum_conf, hyoid_conf) × penalty_coeff
+# 如果只檢測到一個，另一個置信度為 0
+weight = min(confidence_mentum, confidence_hyoid) × penalty_coeff
+```
+
+**程式碼實作**：
+```python
+elif (has_mentum_pred or has_hyoid_pred) and (has_mentum_target and has_hyoid_target):
+    # 單個檢測：使用懲罰值
+    hmd_error = torch.tensor(self.hmd_penalty_single, device=device)  # 500.0
+    
+    # 獲取已檢測目標的置信度，未檢測的為 0
+    mentum_conf = max(mentum_confidences) if has_mentum_pred else 0.0
+    hyoid_conf = max(hyoid_confidences) if has_hyoid_pred else 0.0
+    
+    # 權重 = 較小置信度 × 懲罰係數
+    weight = min(mentum_conf, hyoid_conf) * self.hmd_penalty_coeff  # 0.5
+```
+
+##### 情況 3：兩個目標都漏檢（最差情況）
+
+當模型完全沒有檢測到 Mentum 和 Hyoid 時：
+
+```python
+# 使用最大懲罰值
+hmd_error = penalty_none  # 預設 1000.0 像素
+
+# 權重固定為 1.0
+weight = 1.0
+```
+
+**程式碼實作**：
+```python
+else:
+    # 都漏檢：使用最大懲罰值
+    hmd_error = torch.tensor(self.hmd_penalty_none, device=device)  # 1000.0
+    weight = torch.tensor(1.0, device=device)
+```
+
+#### 4. 批次級別的 HMD Loss 計算
+
+對於一個 batch 中的多張影像，HMD Loss 計算加權平均：
+
+```python
+# 對 batch 中每張影像計算 hmd_error 和 weight
+hmd_errors = [error_1, error_2, ..., error_N]
+weights = [weight_1, weight_2, ..., weight_N]
+
+# 加權平均 HMD Loss
+hmd_loss = sum(hmd_errors × weights) / sum(weights)
+```
+
+**程式碼實作**：
+```python
+# 收集所有影像的誤差和權重
+hmd_errors_tensor = torch.stack(hmd_errors)
+weights_tensor = torch.stack(weights)
+
+# 加權平均
+hmd_loss = (hmd_errors_tensor * weights_tensor).sum() / (weights_tensor.sum() + 1e-8)
+```
+
+#### 5. 整合到總損失函數
+
+HMD Loss 被加權後添加到 box loss 中：
+
+```python
+# 在 v8DetectionLoss.__call__ 中
+if self.use_hmd_loss and fg_mask.sum() > 0:
+    hmd_loss_value = self._calculate_hmd_loss(...)
+    
+    # 累積用於記錄（計算 epoch 平均）
+    self.hmd_loss_sum += hmd_loss_value
+    self.hmd_loss_count += 1
+    
+    # 添加到 box loss（加權）
+    loss[0] = loss[0] + self.hmd_loss_weight * hmd_loss_value
+```
+
+#### 6. 訓練監控指標
+
+在訓練過程中，系統會記錄以下 HMD 相關指標：
+
+- **HMD_loss**：每個 epoch 的平均 HMD loss（跨所有 batch 的平均值）
+- **Detection_Rate**：同時檢測到兩個目標的影像比例（驗證階段）
+- **RMSE_HMD**：HMD 預測的均方根誤差（驗證階段）
+- **Overall_Score**：綜合評分 = Detection_Rate × RMSE_HMD（驗證階段）
+
+**程式碼位置**（`ultralytics/mycodes/train_yolo.py`）：
+```python
+# 在 on_val_end_callback 中提取平均 HMD loss
+if hasattr(criterion, 'get_avg_hmd_loss'):
+    hmd_loss_avg = criterion.get_avg_hmd_loss()  # 整個 epoch 的平均值
+    trainer.metrics["train/hmd_loss"] = hmd_loss_avg
+```
+
+#### 7. 類別映射
+
+HMD Loss 僅適用於 `det_123` 資料庫，類別映射如下：
+
+```python
+mentum_class = 0  # det_123: class 0 是 Mentum（下頜骨）
+hyoid_class = 1   # det_123: class 1 是 Hyoid（舌骨）
+```
+
+**啟用條件檢查**（`ultralytics/mycodes/train_yolo.py`）：
+```python
+use_hmd_loss_flag = args.use_hmd_loss and args.database == 'det_123'
+```
+
+只有當 `--use_hmd_loss` 被指定且 `database == 'det_123'` 時，HMD Loss 才會被啟用。
+
+#### 8. 資料集 HMD 分布分析
+
+根據對 `det_123` 資料集的實際分析，所有 Ground Truth 標註都包含完整的 Mentum 和 Hyoid 兩個目標：
+
+##### det_123.yaml（標準資料集）
+
+| Split | 總圖像數 | 情況1（兩個都有） | 情況2（只有一個） | 情況3（都沒有） |
+|-------|---------|-----------------|----------------|---------------|
+| train | 74,107 | 74,107 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| val   | 16,074 | 16,074 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| test  | 15,369 | 15,369 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| **總計** | **105,550** | **105,550 (100.00%)** | **0 (0.00%)** | **0 (0.00%)** |
+
+##### det_123_ES.yaml（內視鏡資料集）
+
+| Split | 總圖像數 | 情況1（兩個都有） | 情況2（只有一個） | 情況3（都沒有） |
+|-------|---------|-----------------|----------------|---------------|
+| train | 54,053 | 54,053 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| val   | 11,532 | 11,532 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| test  | 11,600 | 11,600 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| **總計** | **77,185** | **77,185 (100.00%)** | **0 (0.00%)** | **0 (0.00%)** |
+
+##### 重要發現
+
+1. **完整的標註品質**：所有 Ground Truth 標註都包含 Mentum 和 Hyoid 兩個目標（情況1：100%），沒有部分標註或缺失標註的情況。
+2. **資料集品質優良**：標註完整且一致，非常適合訓練 HMD Loss。
+3. **訓練階段影響**：
+   - 在訓練階段，所有樣本都屬於**情況1**，HMD Loss 會直接計算 `|pred_hmd - gt_hmd|` 的誤差。
+   - 情況2和情況3的懲罰機制主要用於處理模型在訓練過程中可能產生的漏檢情況。
+4. **驗證/測試階段**：如果模型在驗證或測試時出現漏檢，會觸發情況2或情況3的懲罰機制，幫助模型學習同時檢測兩個目標。
+
+##### 分析工具
+
+可以使用以下命令重新分析資料集分布：
+
+```bash
+python ultralytics/mycodes/analyze_hmd_distribution.py --yaml-dir yolo_dataset/det_123/v3
+```
+
+#### 9. 參數調優建議
+
+- **`--hmd_loss_weight` (λ_hmd)**：
+  - 預設值：`0.1`
+  - 建議範圍：`0.05 - 0.2`
+  - 過大可能影響標準檢測性能，過小可能無法有效優化 HMD
+
+- **`--hmd_penalty_single`**：
+  - 預設值：`500.0` 像素
+  - 建議範圍：`300.0 - 800.0`
+  - 應根據影像解析度調整（640×640 影像建議 500.0）
+
+- **`--hmd_penalty_none`**：
+  - 預設值：`1000.0` 像素
+  - 建議範圍：`800.0 - 1500.0`
+  - 應大於 `penalty_single`，通常為其 2 倍
+
+- **`--hmd_penalty_coeff`**：
+  - 預設值：`0.5`
+  - 建議範圍：`0.3 - 0.7`
+  - 控制單個檢測情況下的權重衰減
+
+**HMD Loss Parameters / HMD Loss 參數說明**:
+- `--use_hmd_loss`: 啟用 HMD loss（必需參數）
+- `--hmd_loss_weight`: HMD loss 權重（λ_hmd，預設：0.1）
+- `--hmd_penalty_single`: 只檢測到一個目標時的懲罰值（預設：500.0 像素）
+- `--hmd_penalty_none`: 兩個目標都漏檢時的懲罰值（預設：1000.0 像素）
+- `--hmd_penalty_coeff`: 單個檢測情況下的權重係數（預設：0.5）
+
+**Note / 注意**: HMD loss 僅適用於 `det_123` 資料庫。損失函數會自動檢查 `args.database == 'det_123'`，只有在此條件滿足時才會應用 HMD loss。
+
 ### Test Example / 測試範例
 
 Quick test with minimal epochs / 快速測試（最少輪數）：
 
 ```bash
-python mycodes/train_yolo.py yolo11n det_123 \
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=128 \
@@ -57,11 +361,11 @@ python mycodes/train_yolo.py yolo11n det_123 \
 
 ```bash
 # For production training / 正式訓練
-python mycodes/best_epoch.py detect 1 \
+python ultralytics/mycodes/best_epoch.py detect 1 \
   --run_name="yolo11n-det_123-v3-exp10-small-obj-optimized"
 
 # For test training / 測試訓練
-python mycodes/best_epoch.py detect 1 \
+python ultralytics/mycodes/best_epoch.py detect 1 \
   --run_name="yolo11n-det_123-v3-test-exp"
 ```
 
@@ -72,7 +376,7 @@ python mycodes/best_epoch.py detect 1 \
 ### Basic Command / 基本命令
 
 ```bash
-python mycodes/train_yolo.py <model> <database> [options]
+python ultralytics/mycodes/train_yolo.py <model> <database> [options]
 ```
 
 **Required / 必需參數：**
@@ -100,6 +404,11 @@ python mycodes/train_yolo.py <model> <database> [options]
 | `--use_focal_loss` | - | Enable Focal Loss for small objects |
 | `--use_dim_weights` | - | Enable dimension-specific weights |
 | `--dim_weights` | - | `W_L W_T W_R W_B` (e.g., `5.0 1.0 5.0 1.0`) |
+| `--use_hmd_loss` | - | Enable HMD loss for `det_123` database only |
+| `--hmd_loss_weight` | `0.1` | HMD loss weight (λ_hmd) |
+| `--hmd_penalty_single` | `500.0` | Penalty when only one target detected (pixels) |
+| `--hmd_penalty_none` | `1000.0` | Penalty when both targets missed (pixels) |
+| `--hmd_penalty_coeff` | `0.5` | Penalty coefficient for single detection |
 
 **Hardware Configuration / 硬體配置：**
 - **Multi-GPU Training / 多 GPU 訓練**:
@@ -250,6 +559,101 @@ cp ultralytics/.env.example ultralytics/.env
 
 - **Training Guide / 訓練指南**: [ultralytics/mycodes/README.md](ultralytics/mycodes/README.md)
 - **Loss Functions / Loss 函數**: [ultralytics/loss_docs/README.md](ultralytics/loss_docs/README.md)
+- **HMD Distance Calculation / HMD 距離計算**: [ultralytics/evaluate/README_HMD.md](ultralytics/evaluate/README_HMD.md)
+
+---
+
+## 🔬 Model Evaluation & HMD Calculation / 模型評估與 HMD 計算
+
+### Complete Workflow / 完整工作流程
+
+#### Step 1: Train Model / 訓練模型
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --epochs=15 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-small-obj" \
+  --exp_name="exp10-small-obj-optimized"
+```
+
+#### Step 2: Test Model on Test Set / 在測試集上測試模型
+
+```bash
+python ultralytics/mycodes/test_yolo.py detect "" det_123 \
+  --db_version 3 \
+  --weights ultralytics/runs/train/yolo11m-det_123-v1-exp18-ext10-lr-strategy/weights/best.pt \
+  --dev cuda:0 \
+  --batch_size 4 \
+  --output-name test_exp1
+```
+
+**Output / 輸出**: `ultralytics/runs/detect/test_exp1/predictions.joblib`
+
+**Note / 注意**: 
+- Use `--output-name` to specify custom output folder name (e.g., `test_exp1` instead of `test2`)
+- If not specified, uses default format: `test{runs_num}` (e.g., `test`, `test2`, `test3`)
+- 使用 `--output-name` 指定自定義輸出資料夾名稱（例如 `test_exp1` 而不是 `test2`）
+- 如果不指定，使用默認格式：`test{runs_num}`（例如 `test`、`test2`、`test3`）
+
+#### Step 3: Calculate HMD from Predictions / 從預測結果計算 HMD
+
+**Single Patient / 單個患者**:
+
+```bash
+# From project root directory
+python evaluate/calculate_hmd_from_yolo.py \
+    --case-id det_123 \
+    --patient-id 0587648 \
+    --pred-joblib ultralytics/runs/detect/test_exp1/predictions.joblib \
+    --compare-gt \
+    --version v3 \
+    --output hmd_comparison_0587648.csv
+```
+
+**Note / 注意**: 
+- Paths are auto-detected from project root. You can also specify manually:
+- 路徑會自動從項目根目錄檢測。也可以手動指定：
+- `--yolo-root yolo_dataset` (default: auto-detect)
+- `--dicom-root dicom_dataset` (default: auto-detect)
+
+**Batch Processing / 批量處理**:
+
+```bash
+# From project root directory
+# Only process patients in test.txt (recommended when using --pred-joblib)
+python evaluate/calculate_hmd_from_yolo.py \
+    --case-id det_123 \
+    --batch \
+    --test-only \
+    --pred-joblib ultralytics/runs/detect/test_exp1/predictions.joblib \
+    --compare-gt \
+    --version v3 \
+    --output hmd_comparison_all.csv
+```
+
+**Note / 注意**: 
+- Use `--test-only` to only process patients in `test.txt` (recommended when using `--pred-joblib`)
+- Without `--test-only`, all patients in `patient_data` will be processed
+- 使用 `--test-only` 只處理 `test.txt` 中的患者（使用 `--pred-joblib` 時建議使用）
+- 不使用 `--test-only` 時，會處理 `patient_data` 中的所有患者
+
+**Output Columns / 輸出列** (with `--compare-gt`):
+- `hmd_pixel`: Predicted pixel distance
+- `hmd_mm`: Predicted millimeter distance
+- `hmd_pixel_gt`: Ground truth pixel distance
+- `hmd_mm_gt`: Ground truth millimeter distance
+- `hmd_pixel_diff`: Pixel distance difference (pred - gt)
+- `hmd_mm_diff`: Millimeter distance difference (pred - gt)
+- `hmd_pixel_abs_diff`: Absolute pixel difference
+- `hmd_mm_abs_diff`: Absolute millimeter difference
+
+**Statistics / 統計指標**:
+- Mean Error (ME)
+- Mean Absolute Error (MAE)
+- Root Mean Squared Error (RMSE)
 
 ---
 
