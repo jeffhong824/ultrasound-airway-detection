@@ -46,7 +46,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 **Simplified / 簡化版** (using default values / 使用預設值):
 
 ```bash
-python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=16 \
@@ -61,7 +61,7 @@ python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
 **Full Command / 完整命令** (with all parameters / 包含所有參數):
 
 ```bash
-python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=16 \
@@ -98,7 +98,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 **Simplified / 簡化版** (using default values / 使用預設值):
 
 ```bash
-python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=256 \
@@ -113,7 +113,7 @@ python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
 **Full Command / 完整命令** (with all parameters / 包含所有參數):
 
 ```bash
-python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=256 \
@@ -869,7 +869,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 ```bash
 python ultralytics/mycodes/test_yolo.py detect "" det_123 \
   --db_version 3 \
-  --weights ultralytics/runs/train/yolo11m-det_123-v1-exp18-ext10-lr-strategy/weights/best.pt \
+  --weights ultralytics/runs/train/yolo11n-det_123-v1-exp18-ext10-lr-strategy/weights/best.pt \
   --dev cuda:0 \
   --batch_size 4 \
   --output-name test_exp1

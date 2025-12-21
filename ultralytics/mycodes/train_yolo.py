@@ -70,8 +70,20 @@ def print_validation_metrics(trainer):
     
     # HMD loss (always show if HMD loss is enabled, even if 0)
     # Check if database is det_123 and HMD loss is enabled
-    is_det_123 = hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and trainer.args.database == 'det_123'
-    hmd_enabled = hasattr(trainer, 'args') and hasattr(trainer.args, 'use_hmd_loss') and trainer.args.use_hmd_loss
+    # Try to get from stored attributes first (set by on_val_end_callback), then fallback to trainer.args
+    if hasattr(trainer, '_args_database'):
+        db_val = trainer._args_database
+        hmd_val = getattr(trainer, '_args_use_hmd_loss', False)
+    else:
+        db_val = getattr(trainer.args, 'database', None) if hasattr(trainer, 'args') else None
+        hmd_val = getattr(trainer.args, 'use_hmd_loss', False) if hasattr(trainer, 'args') else False
+    
+    is_det_123 = db_val == 'det_123'
+    hmd_enabled = hmd_val and is_det_123
+    
+    # Debug: print condition check (can be removed later)
+    import logging
+    logging.info(f"print_validation_metrics: database={db_val}, use_hmd_loss={hmd_val}, is_det_123={is_det_123}, hmd_enabled={hmd_enabled}")
     
     if is_det_123 and hmd_enabled:
         if hmd_loss_value is not None:
@@ -385,86 +397,102 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
         return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
 
 
-def on_val_end_callback(trainer):
-    """Callback to extract HMD metrics after validation"""
-    # Create a dict to store additional metrics (trainer.metrics is DetMetrics object)
-    additional_metrics = {}
-    import numpy as np
+# Create closure to capture args for callbacks
+def create_on_val_end_callback(args):
+    """Create on_val_end callback with access to args"""
+    def on_val_end_callback(trainer):
+        """Callback to extract HMD metrics after validation"""
+        # Create a dict to store additional metrics (trainer.metrics is DetMetrics object)
+        additional_metrics = {}
+        import numpy as np
+        import logging
+        
+        # Debug: check if callback is triggered
+        logging.debug("on_val_end_callback triggered")
+        
+        # Extract HMD loss from model criterion if available
+        # Prefer average HMD loss (across all batches) over last batch loss
+        if hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+            try:
+                criterion = trainer.model.criterion
+                if hasattr(criterion, 'get_avg_hmd_loss'):
+                    # Get average HMD loss across all batches in this epoch
+                    hmd_loss_avg = criterion.get_avg_hmd_loss()
+                    additional_metrics["train/hmd_loss"] = hmd_loss_avg
+                elif hasattr(criterion, 'last_hmd_loss'):
+                    # Fallback to last batch loss if average not available
+                    hmd_loss = float(criterion.last_hmd_loss)
+                    additional_metrics["train/hmd_loss"] = hmd_loss
+            except Exception:
+                pass
+        
+        # Calculate HMD metrics if database is det_123 and HMD loss is enabled
+        # Use closure variable args instead of trainer.args
+        is_det_123 = args.database == 'det_123'
+        hmd_enabled = args.use_hmd_loss and is_det_123
+        
+        # Debug: print condition check
+        logging.debug(f"on_val_end_callback: is_det_123={is_det_123}, hmd_enabled={hmd_enabled}, args.database={args.database}, args.use_hmd_loss={args.use_hmd_loss}")
     
-    # Extract HMD loss from model criterion if available
-    # Prefer average HMD loss (across all batches) over last batch loss
-    if hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
-        try:
-            criterion = trainer.model.criterion
-            if hasattr(criterion, 'get_avg_hmd_loss'):
-                # Get average HMD loss across all batches in this epoch
-                hmd_loss_avg = criterion.get_avg_hmd_loss()
-                additional_metrics["train/hmd_loss"] = hmd_loss_avg
-            elif hasattr(criterion, 'last_hmd_loss'):
-                # Fallback to last batch loss if average not available
-                hmd_loss = float(criterion.last_hmd_loss)
-                additional_metrics["train/hmd_loss"] = hmd_loss
-        except Exception:
-            pass
-    
-    # Calculate HMD metrics if database is det_123 and HMD loss is enabled
-    is_det_123 = hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and trainer.args.database == 'det_123'
-    hmd_enabled = hasattr(trainer, 'args') and hasattr(trainer.args, 'use_hmd_loss') and getattr(trainer.args, 'use_hmd_loss', False)
-    
-    # Always set HMD metrics (even if 0) if HMD loss is enabled, so they will be displayed
-    if is_det_123 and hmd_enabled:
-        try:
-            # Calculate HMD metrics from validator's stats
-            # We need to access predictions and ground truth from validator
-            if hasattr(trainer, 'validator') and trainer.validator is not None:
-                validator = trainer.validator
+        # Always set HMD metrics (even if 0) if HMD loss is enabled, so they will be displayed
+        if is_det_123 and hmd_enabled:
+            try:
+                # Calculate HMD metrics from validator's stats
+                # We need to access predictions and ground truth from validator
+                if hasattr(trainer, 'validator') and trainer.validator is not None:
+                    validator = trainer.validator
+                    
+                    # Get HMD metrics using validator stats and HMD loss from criterion
+                    # The HMD loss already calculates real HMD distances, so we can use that
+                    hmd_metrics = calculate_hmd_metrics_from_validator(
+                        validator=validator,
+                        trainer=trainer,
+                        penalty_single=args.hmd_penalty_single,
+                        penalty_none=args.hmd_penalty_none
+                    )
                 
-                # Get HMD metrics using validator stats and HMD loss from criterion
-                # The HMD loss already calculates real HMD distances, so we can use that
-                hmd_metrics = calculate_hmd_metrics_from_validator(
-                    validator=validator,
-                    trainer=trainer,
-                    penalty_single=getattr(trainer.args, 'hmd_penalty_single', 500.0),
-                    penalty_none=getattr(trainer.args, 'hmd_penalty_none', 1000.0)
-                )
-                
-                additional_metrics["hmd/detection_rate"] = hmd_metrics.get('detection_rate', 0.0)
-                additional_metrics["hmd/rmse_pixel"] = hmd_metrics.get('rmse_pixel', 0.0)
-                additional_metrics["hmd/overall_score_pixel"] = hmd_metrics.get('overall_score_pixel', 0.0)
-                
-                # Debug: print if metrics are 0
-                if hmd_metrics.get('detection_rate', 0.0) == 0.0 and hmd_metrics.get('rmse_pixel', 0.0) == 0.0:
-                    import logging
-                    logging.debug(f"⚠️ HMD metrics are all 0 - validator stats: {hasattr(validator, 'stats')}, stats keys: {list(validator.stats.keys()) if hasattr(validator, 'stats') and validator.stats else 'None'}")
-            else:
-                # If validator not available, set to 0 (but still set them so they will be displayed)
-                import logging
-                logging.warning("⚠️ Validator not available for HMD metrics calculation")
+                    additional_metrics["hmd/detection_rate"] = hmd_metrics.get('detection_rate', 0.0)
+                    additional_metrics["hmd/rmse_pixel"] = hmd_metrics.get('rmse_pixel', 0.0)
+                    additional_metrics["hmd/overall_score_pixel"] = hmd_metrics.get('overall_score_pixel', 0.0)
+                    
+                    # Debug: print if metrics are 0
+                    if hmd_metrics.get('detection_rate', 0.0) == 0.0 and hmd_metrics.get('rmse_pixel', 0.0) == 0.0:
+                        logging.debug(f"⚠️ HMD metrics are all 0 - validator stats: {hasattr(validator, 'stats')}, stats keys: {list(validator.stats.keys()) if hasattr(validator, 'stats') and validator.stats else 'None'}")
+                else:
+                    # If validator not available, set to 0 (but still set them so they will be displayed)
+                    logging.warning("⚠️ Validator not available for HMD metrics calculation")
+                    additional_metrics["hmd/detection_rate"] = 0.0
+                    additional_metrics["hmd/rmse_pixel"] = 0.0
+                    additional_metrics["hmd/overall_score_pixel"] = 0.0
+            except Exception as e:
+                # If calculation fails, set to 0 (but still set them so they will be displayed)
+                logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
+                import traceback
+                logging.debug(traceback.format_exc())
                 additional_metrics["hmd/detection_rate"] = 0.0
                 additional_metrics["hmd/rmse_pixel"] = 0.0
                 additional_metrics["hmd/overall_score_pixel"] = 0.0
-        except Exception as e:
-            # If calculation fails, set to 0 (but still set them so they will be displayed)
-            import logging
-            logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
-            import traceback
-            logging.debug(traceback.format_exc())
+        else:
+            # If HMD loss is not enabled, still set metrics to 0 (but they won't be displayed)
+            # This ensures consistency
             additional_metrics["hmd/detection_rate"] = 0.0
             additional_metrics["hmd/rmse_pixel"] = 0.0
             additional_metrics["hmd/overall_score_pixel"] = 0.0
-    else:
-        # If HMD loss is not enabled, still set metrics to 0 (but they won't be displayed)
-        # This ensures consistency
-        additional_metrics["hmd/detection_rate"] = 0.0
-        additional_metrics["hmd/rmse_pixel"] = 0.0
-        additional_metrics["hmd/overall_score_pixel"] = 0.0
+        
+        # Store additional metrics in trainer for print_validation_metrics to access
+        # We'll attach it as an attribute since trainer.metrics is DetMetrics object
+        trainer._additional_metrics = additional_metrics
+        
+        # Also store args in trainer for print_validation_metrics to access
+        trainer._args_database = args.database
+        trainer._args_use_hmd_loss = args.use_hmd_loss
+        
+        # Print validation metrics after validation completes (so we have the latest metrics)
+        # Debug: force print to see if callback is working
+        logging.info(f"on_val_end_callback: additional_metrics keys = {list(additional_metrics.keys())}")
+        print_validation_metrics(trainer)
     
-    # Store additional metrics in trainer for print_validation_metrics to access
-    # We'll attach it as an attribute since trainer.metrics is DetMetrics object
-    trainer._additional_metrics = additional_metrics
-    
-    # Print validation metrics after validation completes (so we have the latest metrics)
-    print_validation_metrics(trainer)
+    return on_val_end_callback
 
 
 def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: int = 640, 
@@ -791,6 +819,12 @@ if __name__=='__main__':
         """Set dimension weights, focal loss, and HMD loss after trainer initialization and recreate loss function"""
         updated = False
         
+        # Set database attribute (needed for HMD loss check in validation)
+        if isinstance(trainer.args, dict):
+            trainer.args['database'] = args.database
+        else:
+            setattr(trainer.args, 'database', args.database)
+        
         # Set dimension weights
         if use_dim_weights_flag and dim_weights_value:
             if isinstance(trainer.args, dict):
@@ -954,7 +988,9 @@ if __name__=='__main__':
         logging.info("W&B is disabled. Training will proceed without logging, but metrics will be printed to terminal after validation.")
     
     # Add callback to extract IoU, Dice, and HMD metrics after validation
-    model.add_callback("on_val_end", on_val_end_callback)
+    # Create callback with closure to capture args
+    on_val_end_callback_with_args = create_on_val_end_callback(args)
+    model.add_callback("on_val_end", on_val_end_callback_with_args)
     
     # Add callback to reset HMD loss stats at start of each epoch
     def reset_hmd_loss_callback(trainer):
