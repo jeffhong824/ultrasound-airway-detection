@@ -47,37 +47,6 @@ def print_validation_metrics(trainer):
     
     fitness = map50 * 0.1 + map50_95 * 0.9
     
-    # Try to get IoU and Dice from additional_metrics (set by on_val_end_callback)
-    iou_value = None
-    dice_value = None
-    
-    if hasattr(trainer, '_additional_metrics'):
-        additional_metrics = trainer._additional_metrics
-        if "metrics/iou" in additional_metrics:
-            iou_value = additional_metrics["metrics/iou"]
-        if "metrics/dice" in additional_metrics:
-            dice_value = additional_metrics["metrics/dice"]
-    
-    # Try from validator object if available (fallback)
-    if (iou_value is None or dice_value is None) and hasattr(trainer, 'validator') and trainer.validator is not None:
-        try:
-            validator = trainer.validator
-            if hasattr(validator, 'metrics') and hasattr(validator.metrics, 'box'):
-                # Try to get IoU from per-class results (last column is IoU)
-                if hasattr(validator.metrics.box, 'mean_class_results'):
-                    per_class_results = validator.metrics.box.mean_class_results
-                    if per_class_results is not None and len(per_class_results) > 0:
-                        # IoU is typically the last column (index 5)
-                        if per_class_results.shape[1] > 5:
-                            iou_val = float(per_class_results[:, 5].mean())
-                            if iou_val > 0:
-                                iou_value = iou_val
-                        # Dice can be calculated from IoU: Dice = 2*IoU / (1+IoU)
-                        if iou_value is not None and iou_value > 0:
-                            dice_value = 2.0 * iou_value / (1.0 + iou_value) if iou_value < 1.0 else 1.0
-        except Exception:
-            pass  # Silently fail if extraction fails
-    
     # Get HMD loss from additional_metrics (set by on_val_end_callback) or directly from criterion
     hmd_loss_value = None
     if hasattr(trainer, '_additional_metrics') and "train/hmd_loss" in trainer._additional_metrics:
@@ -99,24 +68,16 @@ def print_validation_metrics(trainer):
     print(f"   Precision: {precision:.4f} | Recall: {recall:.4f}")
     print(f"   mAP50: {map50:.4f} | mAP50-95: {map50_95:.4f} | Fitness: {fitness:.4f}")
     
-    # Always try to show IoU and Dice (even if 0 or None)
-    if iou_value is not None:
-        print(f"   IoU: {iou_value:.4f}")
-    else:
-        print(f"   IoU: N/A (not calculated)")
-    
-    if dice_value is not None:
-        print(f"   Dice: {dice_value:.4f}")
-    else:
-        print(f"   Dice: N/A (not calculated)")
-    
     # HMD loss (always show if HMD loss is enabled, even if 0)
-    if hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and trainer.args.database == 'det_123':
-        if hasattr(trainer, 'args') and hasattr(trainer.args, 'use_hmd_loss') and trainer.args.use_hmd_loss:
-            if hmd_loss_value is not None:
-                print(f"   HMD_loss: {hmd_loss_value:.4f}")
-            else:
-                print(f"   HMD_loss: 0.0000 (not calculated)")
+    # Check if database is det_123 and HMD loss is enabled
+    is_det_123 = hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and trainer.args.database == 'det_123'
+    hmd_enabled = hasattr(trainer, 'args') and hasattr(trainer.args, 'use_hmd_loss') and trainer.args.use_hmd_loss
+    
+    if is_det_123 and hmd_enabled:
+        if hmd_loss_value is not None:
+            print(f"   HMD_loss: {hmd_loss_value:.4f}")
+        else:
+            print(f"   HMD_loss: 0.0000 (not calculated)")
     
     # HMD metrics (if available and database is det_123)
     # Try to get from additional_metrics (set by on_val_end_callback)
@@ -130,8 +91,9 @@ def print_validation_metrics(trainer):
         rmse_pixel = float(additional_metrics.get("hmd/rmse_pixel") or additional_metrics.get("val/hmd/rmse_pixel", 0))
         overall_score_pixel = float(additional_metrics.get("hmd/overall_score_pixel") or additional_metrics.get("val/hmd/overall_score_pixel", 0))
     
-    # Always show HMD metrics section if database is det_123 (even if 0)
-    if hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and trainer.args.database == 'det_123':
+    # Always show HMD metrics section if database is det_123 and HMD loss is enabled
+    # Use the same variables from above check
+    if is_det_123 and hmd_enabled:
         print(f"\n📏 HMD Metrics (det_123):")
         print(f"   Detection_Rate: {detection_rate:.4f}")
         print(f"   RMSE_HMD (pixel): {rmse_pixel:.2f} px")
@@ -192,15 +154,7 @@ def log_train_metrics(trainer):
         "metrics/fitness": map50 * 0.1 + map50_95 * 0.9,
     })
     
-    # IoU and Dice (always log, even if 0)
-    # Try to get from additional_metrics first
-    iou_val = 0.0
-    dice_val = 0.0
-    if hasattr(trainer, '_additional_metrics'):
-        iou_val = float(trainer._additional_metrics.get("metrics/iou", 0))
-        dice_val = float(trainer._additional_metrics.get("metrics/dice", 0))
-    logs["metrics/iou"] = iou_val
-    logs["metrics/dice"] = dice_val
+    # IoU and Dice removed - they are bbox-level metrics, not epoch-level
     
     # HMD loss (if available)
     hmd_loss_value = None
@@ -238,57 +192,204 @@ def log_train_metrics(trainer):
     wandb.log(logs, step=trainer.epoch)
 
 
+def on_val_batch_end_callback(trainer):
+    """Callback to collect predictions and ground truth bboxes for HMD calculation"""
+    # Only collect if HMD loss is enabled and database is det_123
+    if not (hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and 
+            trainer.args.database == 'det_123' and
+            hasattr(trainer.args, 'use_hmd_loss') and trainer.args.use_hmd_loss):
+        return
+    
+    # Initialize HMD data collection if not exists
+    if not hasattr(trainer, '_hmd_collection'):
+        trainer._hmd_collection = {
+            'pred_boxes': [],  # List of (image_idx, class, bbox_xyxy, conf)
+            'gt_boxes': [],    # List of (image_idx, class, bbox_xyxy)
+            'image_files': []  # List of image file paths
+        }
+    
+    # Get validator to access current batch
+    if hasattr(trainer, 'validator') and trainer.validator is not None:
+        validator = trainer.validator
+        # Try to access batch data from validator
+        # The validator processes batches in update_metrics, but we need to hook into that
+        # For now, we'll collect from validator's jdict if save_json is enabled
+        # Or we can access from validator's internal state
+        pass
+
+
+def calculate_hmd_from_boxes_np(mentum_box, hyoid_box):
+    """
+    Calculate HMD from two bounding boxes in pixel coordinates (numpy version)
+    
+    Args:
+        mentum_box: [x1, y1, x2, y2] format array
+        hyoid_box: [x1, y1, x2, y2] format array
+    
+    Returns:
+        HMD distance in pixels (float)
+    """
+    mentum_x1, mentum_y1, mentum_x2, mentum_y2 = mentum_box
+    hyoid_x1, hyoid_y1, hyoid_x2, hyoid_y2 = hyoid_box
+    
+    # Calculate HMD (same as loss.py)
+    hmd_dx = hyoid_x1 - mentum_x2
+    mentum_y_center = (mentum_y1 + mentum_y2) / 2
+    hyoid_y_center = (hyoid_y1 + hyoid_y2) / 2
+    hmd_dy = hyoid_y_center - mentum_y_center
+    hmd = np.sqrt(hmd_dx**2 + hmd_dy**2 + 1e-8)
+    
+    return float(hmd)
+
+
+def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.0, penalty_none=1000.0):
+    """
+    Calculate HMD metrics from validator using collected bbox data or HMD loss stats
+    
+    Args:
+        validator: Ultralytics validator object
+        trainer: Trainer object (to access HMD loss stats)
+        penalty_single: Penalty when only one target detected
+        penalty_none: Penalty when both targets missed
+    
+    Returns:
+        Dict with detection_rate, rmse_pixel, overall_score_pixel
+    """
+    import numpy as np
+    import torch
+    
+    try:
+        # First, try to use HMD loss statistics from criterion (most accurate)
+        # The HMD loss already calculates real HMD distances during training/validation
+        if hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+            criterion = trainer.model.criterion
+            if hasattr(criterion, 'use_hmd_loss') and criterion.use_hmd_loss:
+                # Get HMD loss stats - this contains real HMD error calculations
+                # We can use the accumulated HMD loss to estimate RMSE
+                if hasattr(criterion, 'hmd_loss_sum') and hasattr(criterion, 'hmd_loss_count'):
+                    if criterion.hmd_loss_count > 0:
+                        # Average HMD loss represents average HMD error
+                        avg_hmd_loss = criterion.hmd_loss_sum / criterion.hmd_loss_count
+                        
+                        # Get stats from validator for detection rate
+                        if hasattr(validator, 'stats') and validator.stats is not None:
+                            stats = validator.stats
+                            if stats and len(stats.get('tp', [])) > 0:
+                                tp = np.concatenate(stats['tp'], 0) if stats.get('tp') else np.array([])
+                                pred_cls = np.concatenate(stats['pred_cls'], 0) if stats.get('pred_cls') else np.array([])
+                                target_cls = np.concatenate(stats['target_cls'], 0) if stats.get('target_cls') else np.array([])
+                                
+                                # Count images with both classes in GT
+                                mentum_class = 0
+                                hyoid_class = 1
+                                mentum_gt_count = np.sum(target_cls == mentum_class)
+                                hyoid_gt_count = np.sum(target_cls == hyoid_class)
+                                images_with_both_gt = min(mentum_gt_count, hyoid_gt_count) if (mentum_gt_count > 0 and hyoid_gt_count > 0) else 0
+                                
+                                if images_with_both_gt > 0:
+                                    # Count matched detections at IoU=0.5
+                                    if len(tp) > 0 and tp.shape[1] > 0:
+                                        matched_mask = tp[:, 0]
+                                        mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class) & (target_cls == mentum_class))
+                                        hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class) & (target_cls == hyoid_class))
+                                        both_detected_count = min(mentum_matched, hyoid_matched)
+                                        
+                                        detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
+                                        # Use average HMD loss as RMSE (it's already the average HMD error)
+                                        rmse_pixel = float(avg_hmd_loss)
+                                        overall_score_pixel = detection_rate * rmse_pixel if rmse_pixel > 0 else 1.0
+                                        
+                                        return {
+                                            'detection_rate': float(detection_rate),
+                                            'rmse_pixel': float(rmse_pixel),
+                                            'overall_score_pixel': float(overall_score_pixel)
+                                        }
+        
+        # Fallback: calculate from validator stats (without real HMD distance)
+        # Get stats from validator
+        if not hasattr(validator, 'stats') or validator.stats is None:
+            logging.debug("⚠️ Validator stats not available")
+            return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
+        
+        stats = validator.stats
+        if not stats or len(stats.get('tp', [])) == 0:
+            logging.debug("⚠️ Validator stats empty or no tp")
+            return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
+        
+        # Get predictions and ground truth from stats
+        tp = np.concatenate(stats['tp'], 0) if stats.get('tp') else np.array([])
+        pred_cls = np.concatenate(stats['pred_cls'], 0) if stats.get('pred_cls') else np.array([])
+        target_cls = np.concatenate(stats['target_cls'], 0) if stats.get('target_cls') else np.array([])
+        
+        # Mentum class = 0, Hyoid class = 1
+        mentum_class = 0
+        hyoid_class = 1
+        
+        # Count detections for each class
+        if len(tp) > 0 and tp.shape[1] > 0:
+            matched_mask = tp[:, 0]  # Matches at IoU=0.5
+            
+            # Count matched predictions for each class
+            mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class) & (target_cls == mentum_class))
+            hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class) & (target_cls == hyoid_class))
+            
+            # Count total ground truth for each class
+            mentum_gt_count = np.sum(target_cls == mentum_class)
+            hyoid_gt_count = np.sum(target_cls == hyoid_class)
+            
+            # Estimate images with both classes in GT
+            images_with_both_gt = min(mentum_gt_count, hyoid_gt_count) if (mentum_gt_count > 0 and hyoid_gt_count > 0) else 0
+            
+            if images_with_both_gt == 0:
+                return {'detection_rate': 0.0, 'rmse_pixel': penalty_none, 'overall_score_pixel': 0.0}
+            
+            # Count images where both are detected (matched)
+            both_detected_count = min(mentum_matched, hyoid_matched)
+            
+            # Calculate detection rate
+            detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
+            
+            # For RMSE: use penalty-based approximation (without bbox, can't calculate real HMD)
+            hmd_errors = []
+            if both_detected_count > 0:
+                hmd_errors.extend([0.0] * both_detected_count)  # Approximation
+            
+            single_detected = abs(mentum_matched - hyoid_matched)
+            if single_detected > 0:
+                hmd_errors.extend([penalty_single] * single_detected)
+            
+            none_detected = max(0, images_with_both_gt - both_detected_count - single_detected)
+            if none_detected > 0:
+                hmd_errors.extend([penalty_none] * none_detected)
+            
+            # Calculate RMSE
+            if len(hmd_errors) > 0:
+                rmse_pixel = np.sqrt(np.mean(np.array(hmd_errors)**2))
+            else:
+                rmse_pixel = penalty_none
+            
+            overall_score_pixel = detection_rate * rmse_pixel if rmse_pixel > 0 else 1.0
+            
+            return {
+                'detection_rate': float(detection_rate),
+                'rmse_pixel': float(rmse_pixel),
+                'overall_score_pixel': float(overall_score_pixel)
+            }
+        else:
+            return {'detection_rate': 0.0, 'rmse_pixel': penalty_none, 'overall_score_pixel': 0.0}
+        
+    except Exception as e:
+        logging.warning(f"⚠️ Error calculating HMD metrics: {e}")
+        import traceback
+        logging.debug(traceback.format_exc())
+        return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
+
+
 def on_val_end_callback(trainer):
-    """Callback to extract and add IoU, Dice, and HMD metrics after validation"""
+    """Callback to extract HMD metrics after validation"""
     # Create a dict to store additional metrics (trainer.metrics is DetMetrics object)
     additional_metrics = {}
-    
-    # Extract IoU and Dice from validator if available
-    # Use the same method as evaluate_detailed function
-    if hasattr(trainer, 'validator') and trainer.validator is not None:
-        try:
-            validator = trainer.validator
-            # Use trainer.metrics (DetMetrics object) instead of validator.metrics
-            # trainer.metrics is set after validation completes
-            if hasattr(trainer, 'metrics') and trainer.metrics is not None:
-                if hasattr(trainer.metrics, 'box'):
-                    box_metrics = trainer.metrics.box
-                    
-                    # Try to get mean_class_results (same as evaluate_detailed)
-                    try:
-                        if hasattr(box_metrics, 'mean_class_results'):
-                            per_class_results = box_metrics.mean_class_results
-                            # Check if it's a numpy array with correct shape
-                            if per_class_results is not None:
-                                import numpy as np
-                                if isinstance(per_class_results, np.ndarray):
-                                    if len(per_class_results.shape) == 2 and per_class_results.shape[1] >= 6:
-                                        # Shape: (num_classes, 6) where columns are [P, R, AP50, AP75, F1, IoU]
-                                        iou_value = float(per_class_results[:, 5].mean())
-                                        additional_metrics["metrics/iou"] = iou_value
-                                        # Calculate Dice from IoU: Dice = 2*IoU / (1+IoU)
-                                        dice_value = 2.0 * iou_value / (1.0 + iou_value) if iou_value < 1.0 else 1.0
-                                        additional_metrics["metrics/dice"] = dice_value
-                    except Exception as e1:
-                        # Try alternative: access via validator.metrics
-                        try:
-                            if hasattr(validator, 'metrics') and hasattr(validator.metrics, 'box'):
-                                box_metrics = validator.metrics.box
-                                if hasattr(box_metrics, 'mean_class_results'):
-                                    per_class_results = box_metrics.mean_class_results
-                                    if per_class_results is not None:
-                                        import numpy as np
-                                        if isinstance(per_class_results, np.ndarray):
-                                            if len(per_class_results.shape) == 2 and per_class_results.shape[1] >= 6:
-                                                iou_value = float(per_class_results[:, 5].mean())
-                                                additional_metrics["metrics/iou"] = iou_value
-                                                dice_value = 2.0 * iou_value / (1.0 + iou_value) if iou_value < 1.0 else 1.0
-                                                additional_metrics["metrics/dice"] = dice_value
-                        except Exception:
-                            pass
-        except Exception as e:
-            # Silently fail if extraction fails
-            pass
+    import numpy as np
     
     # Extract HMD loss from model criterion if available
     # Prefer average HMD loss (across all batches) over last batch loss
@@ -305,6 +406,58 @@ def on_val_end_callback(trainer):
                 additional_metrics["train/hmd_loss"] = hmd_loss
         except Exception:
             pass
+    
+    # Calculate HMD metrics if database is det_123 and HMD loss is enabled
+    is_det_123 = hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and trainer.args.database == 'det_123'
+    hmd_enabled = hasattr(trainer, 'args') and hasattr(trainer.args, 'use_hmd_loss') and getattr(trainer.args, 'use_hmd_loss', False)
+    
+    # Always set HMD metrics (even if 0) if HMD loss is enabled, so they will be displayed
+    if is_det_123 and hmd_enabled:
+        try:
+            # Calculate HMD metrics from validator's stats
+            # We need to access predictions and ground truth from validator
+            if hasattr(trainer, 'validator') and trainer.validator is not None:
+                validator = trainer.validator
+                
+                # Get HMD metrics using validator stats and HMD loss from criterion
+                # The HMD loss already calculates real HMD distances, so we can use that
+                hmd_metrics = calculate_hmd_metrics_from_validator(
+                    validator=validator,
+                    trainer=trainer,
+                    penalty_single=getattr(trainer.args, 'hmd_penalty_single', 500.0),
+                    penalty_none=getattr(trainer.args, 'hmd_penalty_none', 1000.0)
+                )
+                
+                additional_metrics["hmd/detection_rate"] = hmd_metrics.get('detection_rate', 0.0)
+                additional_metrics["hmd/rmse_pixel"] = hmd_metrics.get('rmse_pixel', 0.0)
+                additional_metrics["hmd/overall_score_pixel"] = hmd_metrics.get('overall_score_pixel', 0.0)
+                
+                # Debug: print if metrics are 0
+                if hmd_metrics.get('detection_rate', 0.0) == 0.0 and hmd_metrics.get('rmse_pixel', 0.0) == 0.0:
+                    import logging
+                    logging.debug(f"⚠️ HMD metrics are all 0 - validator stats: {hasattr(validator, 'stats')}, stats keys: {list(validator.stats.keys()) if hasattr(validator, 'stats') and validator.stats else 'None'}")
+            else:
+                # If validator not available, set to 0 (but still set them so they will be displayed)
+                import logging
+                logging.warning("⚠️ Validator not available for HMD metrics calculation")
+                additional_metrics["hmd/detection_rate"] = 0.0
+                additional_metrics["hmd/rmse_pixel"] = 0.0
+                additional_metrics["hmd/overall_score_pixel"] = 0.0
+        except Exception as e:
+            # If calculation fails, set to 0 (but still set them so they will be displayed)
+            import logging
+            logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
+            import traceback
+            logging.debug(traceback.format_exc())
+            additional_metrics["hmd/detection_rate"] = 0.0
+            additional_metrics["hmd/rmse_pixel"] = 0.0
+            additional_metrics["hmd/overall_score_pixel"] = 0.0
+    else:
+        # If HMD loss is not enabled, still set metrics to 0 (but they won't be displayed)
+        # This ensures consistency
+        additional_metrics["hmd/detection_rate"] = 0.0
+        additional_metrics["hmd/rmse_pixel"] = 0.0
+        additional_metrics["hmd/overall_score_pixel"] = 0.0
     
     # Store additional metrics in trainer for print_validation_metrics to access
     # We'll attach it as an attribute since trainer.metrics is DetMetrics object

@@ -1,6 +1,8 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
 from typing import Any, Dict, List, Optional, Tuple
+import sys
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -14,6 +16,19 @@ from ultralytics.utils.torch_utils import autocast
 
 from .metrics import bbox_iou, probiou
 from .tal import bbox2dist
+
+# Import HMD utilities from mycodes
+try:
+    # Try to import from mycodes (for development)
+    _mycodes_path = Path(__file__).parent.parent.parent / "mycodes"
+    if _mycodes_path.exists():
+        sys.path.insert(0, str(_mycodes_path.parent))
+        from mycodes.hmd_utils import calculate_hmd_from_boxes, calculate_hmd_loss
+        _HMD_UTILS_AVAILABLE = True
+    else:
+        _HMD_UTILS_AVAILABLE = False
+except ImportError:
+    _HMD_UTILS_AVAILABLE = False
 
 
 class VarifocalLoss(nn.Module):
@@ -501,6 +516,11 @@ class v8DetectionLoss:
         Returns:
             HMD distance in pixels (scalar tensor)
         """
+        # Use hmd_utils function if available, otherwise use local implementation
+        if _HMD_UTILS_AVAILABLE:
+            return calculate_hmd_from_boxes(mentum_box, hyoid_box)
+        
+        # Fallback to local implementation
         mentum_x1, mentum_y1, mentum_x2, mentum_y2 = mentum_box
         hyoid_x1, hyoid_y1, hyoid_x2, hyoid_y2 = hyoid_box
         
@@ -536,6 +556,91 @@ class v8DetectionLoss:
         Returns:
             HMD loss (scalar tensor)
         """
+        # Use hmd_utils.calculate_hmd_loss if available, otherwise use local implementation
+        if _HMD_UTILS_AVAILABLE:
+            batch_size = pred_bboxes.shape[0]
+            device = pred_bboxes.device
+            
+            # Convert normalized coordinates to pixel coordinates
+            pred_bboxes_pixel = pred_bboxes * stride_tensor
+            target_bboxes_pixel = target_bboxes * stride_tensor
+            
+            # Get predicted confidences (sigmoid)
+            pred_conf = pred_scores.sigmoid()
+            
+            # Prepare data for hmd_utils.calculate_hmd_loss
+            # It expects [batch, num_pred, 4] format with filtered predictions
+            pred_boxes_list = []
+            pred_conf_list = []
+            pred_cls_list = []
+            target_boxes_list = []
+            target_cls_list = []
+            
+            for b in range(batch_size):
+                fg_mask_b = fg_mask[b]
+                
+                if not fg_mask_b.any():
+                    # No foreground: add empty tensors
+                    pred_boxes_list.append(torch.empty(0, 4, device=device))
+                    pred_conf_list.append(torch.empty(0, device=device))
+                    pred_cls_list.append(torch.empty(0, dtype=torch.long, device=device))
+                    target_boxes_list.append(torch.empty(0, 4, device=device))
+                    target_cls_list.append(torch.empty(0, dtype=torch.long, device=device))
+                    continue
+                
+                # Extract foreground predictions and targets
+                pred_boxes_fg = pred_bboxes_pixel[b][fg_mask_b]  # [num_fg, 4]
+                pred_conf_fg = pred_conf[b][fg_mask_b]  # [num_fg, num_classes]
+                pred_cls_fg = pred_conf_fg.argmax(dim=1)  # [num_fg]
+                
+                # Get max confidence for each prediction
+                pred_conf_max = pred_conf_fg.max(dim=1)[0]  # [num_fg]
+                
+                target_boxes_fg = target_bboxes_pixel[b][fg_mask_b]  # [num_fg, 4]
+                target_labels_fg = gt_labels[b][fg_mask_b].squeeze(-1).long()  # [num_fg]
+                
+                pred_boxes_list.append(pred_boxes_fg)
+                pred_conf_list.append(pred_conf_max)
+                pred_cls_list.append(pred_cls_fg)
+                target_boxes_list.append(target_boxes_fg)
+                target_cls_list.append(target_labels_fg)
+            
+            # Pad to same length for batching (or process individually)
+            # For simplicity, process batch by batch and average
+            hmd_losses = []
+            for b in range(batch_size):
+                if len(pred_boxes_list[b]) == 0:
+                    # No foreground: use penalty
+                    hmd_losses.append(torch.tensor(self.hmd_penalty_none, device=device))
+                    continue
+                
+                # Call hmd_utils function (it expects batch format, so we create a batch of 1)
+                pred_boxes_batch = pred_boxes_list[b].unsqueeze(0)  # [1, num_fg, 4]
+                pred_conf_batch = pred_conf_list[b].unsqueeze(0)  # [1, num_fg]
+                pred_cls_batch = pred_cls_list[b].unsqueeze(0)  # [1, num_fg]
+                target_boxes_batch = target_boxes_list[b].unsqueeze(0)  # [1, num_fg, 4]
+                target_cls_batch = target_cls_list[b].unsqueeze(0)  # [1, num_fg]
+                
+                hmd_loss_b, _ = calculate_hmd_loss(
+                    pred_boxes_batch, pred_conf_batch, pred_cls_batch,
+                    target_boxes_batch, target_cls_batch,
+                    mentum_class=self.mentum_class,
+                    hyoid_class=self.hyoid_class,
+                    penalty_single=self.hmd_penalty_single,
+                    penalty_none=self.hmd_penalty_none,
+                    penalty_coeff=self.hmd_penalty_coeff
+                )
+                hmd_losses.append(hmd_loss_b)
+            
+            # Average across batch
+            if len(hmd_losses) > 0:
+                hmd_loss = torch.stack(hmd_losses).mean()
+            else:
+                hmd_loss = torch.tensor(0.0, device=device)
+            
+            return hmd_loss
+        
+        # Fallback to local implementation
         batch_size = pred_bboxes.shape[0]
         device = pred_bboxes.device
         

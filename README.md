@@ -238,24 +238,251 @@ if self.use_hmd_loss and fg_mask.sum() > 0:
     loss[0] = loss[0] + self.hmd_loss_weight * hmd_loss_value
 ```
 
-#### 6. 訓練監控指標
+#### 6. HMD Loss 計算原理與實現
 
-在訓練過程中，系統會記錄以下 HMD 相關指標：
+##### 6.1 核心計算邏輯
 
-- **HMD_loss**：每個 epoch 的平均 HMD loss（跨所有 batch 的平均值）
-- **Detection_Rate**：同時檢測到兩個目標的影像比例（驗證階段）
-- **RMSE_HMD**：HMD 預測的均方根誤差（驗證階段）
-- **Overall_Score**：綜合評分 = Detection_Rate × RMSE_HMD（驗證階段）
+HMD Loss 的核心是計算**預測 HMD 與 Ground Truth HMD 的絕對差值**，並將其作為損失函數的一部分：
+
+```python
+# 在 ultralytics/ultralytics/utils/loss.py 的 v8DetectionLoss._calculate_hmd_loss 中
+
+# 情況 1：兩個目標都檢測到
+if has_mentum_pred and has_hyoid_pred and has_mentum_target and has_hyoid_target:
+    # 計算預測 HMD
+    pred_hmd = self._calculate_hmd_from_boxes(
+        pred_boxes_fg[mentum_idx], pred_boxes_fg[hyoid_idx]
+    )
+    
+    # 計算 Ground Truth HMD
+    gt_hmd = self._calculate_hmd_from_boxes(
+        target_boxes_fg[mentum_target_idx], target_boxes_fg[hyoid_target_idx]
+    )
+    
+    # HMD 誤差 = |預測 HMD - 真實 HMD|
+    hmd_error = torch.abs(pred_hmd - gt_hmd)
+    
+    # 權重 = Mentum 置信度 × Hyoid 置信度
+    weight = pred_conf_fg[mentum_idx, self.mentum_class] * pred_conf_fg[hyoid_idx, self.hyoid_class]
+```
+
+**關鍵點**：
+- **絕對差值**：使用 `torch.abs(pred_hmd - gt_hmd)` 確保誤差為正值
+- **置信度加權**：使用兩個目標的置信度乘積作為權重，高置信度預測對損失貢獻更大
+- **像素級計算**：HMD 距離以像素為單位計算，不依賴 DICOM PixelSpacing（訓練階段）
+
+##### 6.2 v8DetectionLoss 類實現位置
+
+HMD Loss 的實現位於 `ultralytics/ultralytics/utils/loss.py` 中的 `v8DetectionLoss` 類：
+
+**類定義**（第 274-293 行）：
+```python
+class v8DetectionLoss:
+    """Criterion class for computing training losses for YOLOv8 object detection."""
+    
+    def __init__(
+        self, 
+        model, 
+        use_hmd_loss: Optional[bool] = None,
+        hmd_loss_weight: Optional[float] = None,
+        hmd_penalty_single: Optional[float] = None,
+        hmd_penalty_none: Optional[float] = None,
+        hmd_penalty_coeff: Optional[float] = None,
+        mentum_class: int = 0,
+        hyoid_class: int = 1,
+    ):
+        # 初始化 HMD loss 參數
+        self.use_hmd_loss = use_hmd_loss
+        self.hmd_loss_weight = hmd_loss_weight
+        # ... 其他參數
+```
+
+**損失計算入口**（第 419-494 行）：
+```python
+def __call__(self, preds: Any, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
+    # ... 標準檢測損失計算（box, cls, dfl）
+    
+    # HMD loss calculation (if enabled)
+    if self.use_hmd_loss and fg_mask.sum() > 0:
+        hmd_loss_value = self._calculate_hmd_loss(
+            pred_bboxes, pred_scores, target_bboxes, gt_labels, fg_mask, stride_tensor
+        )
+        # 累積用於記錄（計算 epoch 平均）
+        self.hmd_loss_sum += hmd_loss_value
+        self.hmd_loss_count += 1
+        # 添加到 box loss（加權）
+        loss[0] = loss[0] + self.hmd_loss_weight * hmd_loss_value
+```
+
+**HMD Loss 計算方法**（第 536-759 行）：
+```python
+def _calculate_hmd_loss(
+    self,
+    pred_bboxes: torch.Tensor,
+    pred_scores: torch.Tensor,
+    target_bboxes: torch.Tensor,
+    gt_labels: torch.Tensor,
+    fg_mask: torch.Tensor,
+    stride_tensor: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Calculate HMD loss for the batch
+    
+    返回加權平均的 HMD 誤差（像素單位）
+    """
+    # 實現細節見上述 6.1 節
+```
+
+**HMD 距離計算方法**（第 508-534 行）：
+```python
+def _calculate_hmd_from_boxes(self, mentum_box: torch.Tensor, hyoid_box: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate HMD from two bounding boxes in pixel coordinates
+    
+    計算公式：
+    - hmd_dx = hyoid_x1 - mentum_x2
+    - hmd_dy = (hyoid_y1 + hyoid_y2) / 2 - (mentum_y1 + mentum_y2) / 2
+    - hmd = sqrt(hmd_dx² + hmd_dy²)
+    """
+    # 優先使用 hmd_utils.calculate_hmd_from_boxes（如果可用）
+    if _HMD_UTILS_AVAILABLE:
+        return calculate_hmd_from_boxes(mentum_box, hyoid_box)
+    
+    # 回退到本地實現
+    # ...
+```
+
+##### 6.3 與 hmd_utils.py 的整合
+
+`v8DetectionLoss` 類會優先使用 `ultralytics/mycodes/hmd_utils.py` 中的函數（如果可用）：
+
+```python
+# 在 loss.py 頂部（第 20-31 行）
+try:
+    _mycodes_path = Path(__file__).parent.parent.parent / "mycodes"
+    if _mycodes_path.exists():
+        sys.path.insert(0, str(_mycodes_path.parent))
+        from mycodes.hmd_utils import calculate_hmd_from_boxes, calculate_hmd_loss
+        _HMD_UTILS_AVAILABLE = True
+except ImportError:
+    _HMD_UTILS_AVAILABLE = False
+```
+
+這樣設計的好處：
+- **代碼復用**：避免重複實現相同的 HMD 計算邏輯
+- **易於維護**：HMD 計算邏輯集中在 `hmd_utils.py` 中
+- **向後兼容**：如果 `hmd_utils.py` 不可用，會回退到本地實現
+
+#### 7. 訓練監控指標
+
+在訓練過程中，系統會在**每個 validation epoch 結束後**顯示以下 HMD 相關指標：
+
+##### 7.1 指標列表與解釋
+
+**1. HMD_loss（HMD 損失值）**
+- **定義**：每個 epoch 的平均 HMD loss（跨所有 batch 的平均值）
+- **計算方式**：`hmd_loss_sum / hmd_loss_count`（在 `v8DetectionLoss.get_avg_hmd_loss()` 中計算）
+- **單位**：像素（pixels）
+- **意義**：
+  - 反映模型預測 HMD 與真實 HMD 的平均誤差
+  - 值越小表示 HMD 預測越準確
+  - 包含三種情況的加權平均：完全檢測、部分檢測、完全漏檢
+- **顯示位置**：終端輸出中的 `📊 Additional Metrics` 區塊
+- **程式碼位置**：`ultralytics/mycodes/train_yolo.py` 第 71-77 行
+
+**2. Detection_Rate（檢測率）**
+- **定義**：同時檢測到 Mentum 和 Hyoid 兩個目標的影像比例
+- **計算公式**：`Detection_Rate = (同時檢測到兩個目標的圖片數) / (總圖片數)`
+- **範圍**：0.0 到 1.0
+- **意義**：
+  - 反映模型同時檢測兩個目標的能力
+  - 值越接近 1.0 表示模型漏檢率越低
+  - 是評估模型完整性的重要指標
+- **顯示位置**：終端輸出中的 `📏 HMD Metrics (det_123)` 區塊
+- **程式碼位置**：`ultralytics/mycodes/train_yolo.py` 第 95-96 行
+
+**3. RMSE_HMD (pixel)（HMD 均方根誤差）**
+- **定義**：HMD 預測的均方根誤差（Root Mean Squared Error）
+- **計算公式**：`RMSE_HMD = sqrt(mean((pred_HMD - GT_HMD)²))`
+- **單位**：像素（pixels）
+- **意義**：
+  - 反映 HMD 預測的整體準確性
+  - 對大誤差更敏感（因為平方操作）
+  - 值越小表示 HMD 預測越準確
+  - **注意**：此指標基於 HMD loss 中累積的真實 HMD 誤差計算，而非僅使用懲罰值
+- **顯示位置**：終端輸出中的 `📏 HMD Metrics (det_123)` 區塊
+- **程式碼位置**：`ultralytics/mycodes/train_yolo.py` 第 97 行
+
+**4. Overall_Score (pixel)（綜合評分）**
+- **定義**：綜合評分，結合檢測率和 HMD 誤差
+- **計算公式**：`Overall_Score = Detection_Rate × RMSE_HMD`
+- **單位**：像素（pixels）
+- **意義**：
+  - 同時考慮檢測完整性和預測準確性
+  - 值越小表示整體性能越好
+  - 當 Detection_Rate 接近 1.0 時，Overall_Score 主要反映 RMSE_HMD
+  - 當 Detection_Rate 較低時，Overall_Score 會相應降低，反映漏檢的影響
+- **顯示位置**：終端輸出中的 `📏 HMD Metrics (det_123)` 區塊
+- **程式碼位置**：`ultralytics/mycodes/train_yolo.py` 第 98 行
+
+##### 7.2 指標計算流程
+
+**訓練階段（每個 batch）**：
+1. 在 `v8DetectionLoss.__call__` 中計算 HMD loss
+2. 累積 `hmd_loss_sum` 和 `hmd_loss_count`
+3. 將加權 HMD loss 添加到總損失中
+
+**驗證階段（每個 epoch 結束後）**：
+1. `on_val_end_callback` 被觸發（`ultralytics/mycodes/train_yolo.py` 第 386 行）
+2. 從 `criterion.get_avg_hmd_loss()` 獲取平均 HMD loss
+3. 從 validator stats 計算 Detection_Rate
+4. 使用 HMD loss 統計計算 RMSE_HMD（基於真實 HMD 誤差）
+5. 計算 Overall_Score
+6. 調用 `print_validation_metrics` 顯示所有指標
 
 **程式碼位置**（`ultralytics/mycodes/train_yolo.py`）：
 ```python
-# 在 on_val_end_callback 中提取平均 HMD loss
-if hasattr(criterion, 'get_avg_hmd_loss'):
-    hmd_loss_avg = criterion.get_avg_hmd_loss()  # 整個 epoch 的平均值
-    trainer.metrics["train/hmd_loss"] = hmd_loss_avg
+# 在 on_val_end_callback 中提取平均 HMD loss（第 392-406 行）
+if hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+    criterion = trainer.model.criterion
+    if hasattr(criterion, 'get_avg_hmd_loss'):
+        hmd_loss_avg = criterion.get_avg_hmd_loss()  # 整個 epoch 的平均值
+        additional_metrics["train/hmd_loss"] = hmd_loss_avg
+
+# 在 calculate_hmd_metrics_from_validator 中計算其他指標（第 243-383 行）
+hmd_metrics = calculate_hmd_metrics_from_validator(
+    validator=validator,
+    trainer=trainer,
+    penalty_single=getattr(trainer.args, 'hmd_penalty_single', 500.0),
+    penalty_none=getattr(trainer.args, 'hmd_penalty_none', 1000.0)
+)
+# 返回：detection_rate, rmse_pixel, overall_score_pixel
 ```
 
-#### 7. 類別映射
+##### 7.3 終端輸出範例
+
+訓練時，每個 validation epoch 結束後會看到類似輸出：
+
+```
+📊 Additional Metrics:
+   Precision: 0.7770 | Recall: 0.7160
+   mAP50: 0.7028 | mAP50-95: 0.2495 | Fitness: 0.2948
+   HMD_loss: 123.4567
+
+📏 HMD Metrics (det_123):
+   Detection_Rate: 0.8500
+   RMSE_HMD (pixel): 45.67 px
+   Overall_Score (pixel): 38.82
+```
+
+**說明**：
+- `HMD_loss: 123.4567` 表示該 epoch 的平均 HMD 損失為 123.46 像素
+- `Detection_Rate: 0.8500` 表示 85% 的影像同時檢測到兩個目標
+- `RMSE_HMD (pixel): 45.67 px` 表示 HMD 預測的均方根誤差為 45.67 像素
+- `Overall_Score (pixel): 38.82` 表示綜合評分為 38.82（0.85 × 45.67 ≈ 38.82）
+
+#### 8. 類別映射
 
 HMD Loss 僅適用於 `det_123` 資料庫，類別映射如下：
 
@@ -271,7 +498,7 @@ use_hmd_loss_flag = args.use_hmd_loss and args.database == 'det_123'
 
 只有當 `--use_hmd_loss` 被指定且 `database == 'det_123'` 時，HMD Loss 才會被啟用。
 
-#### 8. 資料集 HMD 分布分析
+#### 9. 資料集 HMD 分布分析
 
 根據對 `det_123` 資料集的實際分析，所有 Ground Truth 標註都包含完整的 Mentum 和 Hyoid 兩個目標：
 
@@ -310,7 +537,7 @@ use_hmd_loss_flag = args.use_hmd_loss and args.database == 'det_123'
 python ultralytics/mycodes/analyze_hmd_distribution.py --yaml-dir yolo_dataset/det_123/v3
 ```
 
-#### 9. 參數調優建議
+#### 10. 參數調優建議
 
 - **`--hmd_loss_weight` (λ_hmd)**：
   - 預設值：`0.1`
