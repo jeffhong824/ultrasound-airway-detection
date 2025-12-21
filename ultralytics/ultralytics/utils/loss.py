@@ -268,6 +268,13 @@ class v8DetectionLoss:
         use_focal_loss: Optional[bool] = None,
         focal_gamma: Optional[float] = None,
         focal_alpha: Optional[float] = None,
+        use_hmd_loss: Optional[bool] = None,
+        hmd_loss_weight: Optional[float] = None,
+        hmd_penalty_single: Optional[float] = None,
+        hmd_penalty_none: Optional[float] = None,
+        hmd_penalty_coeff: Optional[float] = None,
+        mentum_class: int = 0,
+        hyoid_class: int = 1,
     ):  # model must be de-paralleled
         """
         Initialize v8DetectionLoss with model parameters and task-aligned assignment settings.
@@ -286,6 +293,14 @@ class v8DetectionLoss:
                                             If None, reads from model.args.use_focal_loss (default: False).
             focal_gamma (float, optional): Focal Loss gamma parameter. If None, reads from model.args.focal_gamma (default: 1.5).
             focal_alpha (float, optional): Focal Loss alpha parameter. If None, reads from model.args.focal_alpha (default: 0.25).
+            use_hmd_loss (bool, optional): Whether to use HMD loss for det_123 database.
+                                          If None, reads from model.args.use_hmd_loss (default: False).
+            hmd_loss_weight (float, optional): Weight for HMD loss (λ_hmd). If None, reads from model.args.hmd_loss_weight (default: 0.1).
+            hmd_penalty_single (float, optional): Penalty when only one target detected. If None, reads from model.args.hmd_penalty_single (default: 500.0).
+            hmd_penalty_none (float, optional): Penalty when both targets missed. If None, reads from model.args.hmd_penalty_none (default: 1000.0).
+            hmd_penalty_coeff (float, optional): Penalty coefficient for single detection. If None, reads from model.args.hmd_penalty_coeff (default: 0.5).
+            mentum_class (int): Class ID for Mentum (default: 0 for det_123).
+            hyoid_class (int): Class ID for Hyoid (default: 1 for det_123).
         """
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
@@ -322,6 +337,35 @@ class v8DetectionLoss:
             LOGGER.info(f"v8DetectionLoss: Focal Loss enabled - gamma={focal_gamma}, alpha={focal_alpha}")
         else:
             self.focal_loss = None
+
+        # Read HMD loss settings from model.args if not provided
+        if use_hmd_loss is None:
+            use_hmd_loss = getattr(h, 'use_hmd_loss', False)
+        if hmd_loss_weight is None:
+            hmd_loss_weight = getattr(h, 'hmd_loss_weight', 0.1)
+        if hmd_penalty_single is None:
+            hmd_penalty_single = getattr(h, 'hmd_penalty_single', 500.0)
+        if hmd_penalty_none is None:
+            hmd_penalty_none = getattr(h, 'hmd_penalty_none', 1000.0)
+        if hmd_penalty_coeff is None:
+            hmd_penalty_coeff = getattr(h, 'hmd_penalty_coeff', 0.5)
+        
+        # Initialize HMD loss if enabled
+        self.use_hmd_loss = use_hmd_loss
+        self.hmd_loss_weight = hmd_loss_weight
+        self.hmd_penalty_single = hmd_penalty_single
+        self.hmd_penalty_none = hmd_penalty_none
+        self.hmd_penalty_coeff = hmd_penalty_coeff
+        self.mentum_class = mentum_class
+        self.hyoid_class = hyoid_class
+        self.last_hmd_loss = 0.0  # Store last HMD loss value for logging (last batch only)
+        self.hmd_loss_sum = 0.0  # Accumulate HMD loss across batches
+        self.hmd_loss_count = 0  # Count batches with HMD loss
+        
+        if self.use_hmd_loss:
+            LOGGER.info(f"v8DetectionLoss: HMD Loss enabled - weight={hmd_loss_weight}, "
+                       f"penalty_single={hmd_penalty_single}, penalty_none={hmd_penalty_none}, "
+                       f"mentum_class={mentum_class}, hyoid_class={hyoid_class}")
 
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = BboxLoss(
@@ -416,7 +460,198 @@ class v8DetectionLoss:
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
 
+        # HMD loss calculation (if enabled)
+        if self.use_hmd_loss and fg_mask.sum() > 0:
+            hmd_loss_value = self._calculate_hmd_loss(
+                pred_bboxes, pred_scores, target_bboxes, gt_labels, fg_mask, stride_tensor
+            )
+            # Store HMD loss value for logging (last batch)
+            hmd_loss_scalar = float(hmd_loss_value.detach().cpu().item())
+            self.last_hmd_loss = hmd_loss_scalar
+            # Accumulate for epoch average
+            self.hmd_loss_sum += hmd_loss_scalar
+            self.hmd_loss_count += 1
+            # Add HMD loss to box loss (weighted)
+            loss[0] = loss[0] + self.hmd_loss_weight * hmd_loss_value
+        else:
+            self.last_hmd_loss = 0.0
+
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+    
+    def get_avg_hmd_loss(self) -> float:
+        """Get average HMD loss across all batches in current epoch"""
+        if self.hmd_loss_count > 0:
+            return self.hmd_loss_sum / self.hmd_loss_count
+        return 0.0
+    
+    def reset_hmd_loss_stats(self):
+        """Reset HMD loss accumulation (call at start of each epoch)"""
+        self.hmd_loss_sum = 0.0
+        self.hmd_loss_count = 0
+        self.last_hmd_loss = 0.0
+
+    def _calculate_hmd_from_boxes(self, mentum_box: torch.Tensor, hyoid_box: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate HMD from two bounding boxes in pixel coordinates
+        
+        Args:
+            mentum_box: [x1, y1, x2, y2] format tensor
+            hyoid_box: [x1, y1, x2, y2] format tensor
+        
+        Returns:
+            HMD distance in pixels (scalar tensor)
+        """
+        mentum_x1, mentum_y1, mentum_x2, mentum_y2 = mentum_box
+        hyoid_x1, hyoid_y1, hyoid_x2, hyoid_y2 = hyoid_box
+        
+        # Calculate HMD
+        hmd_dx = hyoid_x1 - mentum_x2
+        mentum_y_center = (mentum_y1 + mentum_y2) / 2
+        hyoid_y_center = (hyoid_y1 + hyoid_y2) / 2
+        hmd_dy = hyoid_y_center - mentum_y_center
+        hmd = torch.sqrt(hmd_dx**2 + hmd_dy**2 + 1e-8)  # Add small epsilon for numerical stability
+        
+        return hmd
+
+    def _calculate_hmd_loss(
+        self,
+        pred_bboxes: torch.Tensor,
+        pred_scores: torch.Tensor,
+        target_bboxes: torch.Tensor,
+        gt_labels: torch.Tensor,
+        fg_mask: torch.Tensor,
+        stride_tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Calculate HMD loss for the batch
+        
+        Args:
+            pred_bboxes: Predicted boxes [batch, num_anchors, 4] in xyxy format (normalized)
+            pred_scores: Predicted scores [batch, num_anchors, num_classes]
+            target_bboxes: Target boxes [batch, num_anchors, 4] in xyxy format (normalized)
+            gt_labels: Target labels [batch, num_anchors, 1]
+            fg_mask: Foreground mask [batch, num_anchors]
+            stride_tensor: Stride tensor for denormalization
+        
+        Returns:
+            HMD loss (scalar tensor)
+        """
+        batch_size = pred_bboxes.shape[0]
+        device = pred_bboxes.device
+        
+        hmd_errors = []
+        weights = []
+        
+        # Convert normalized coordinates to pixel coordinates
+        pred_bboxes_pixel = pred_bboxes * stride_tensor
+        target_bboxes_pixel = target_bboxes * stride_tensor
+        
+        # Get predicted confidences (sigmoid)
+        pred_conf = pred_scores.sigmoid()
+        
+        for b in range(batch_size):
+            # Get foreground predictions and targets for this image
+            fg_mask_b = fg_mask[b]  # [num_anchors]
+            
+            if not fg_mask_b.any():
+                # No foreground, use maximum penalty
+                hmd_error = torch.tensor(self.hmd_penalty_none, device=device)
+                weight = torch.tensor(1.0, device=device)
+                hmd_errors.append(hmd_error)
+                weights.append(weight)
+                continue
+            
+            # Extract foreground predictions and targets
+            pred_boxes_fg = pred_bboxes_pixel[b][fg_mask_b]  # [num_fg, 4]
+            pred_conf_fg = pred_conf[b][fg_mask_b]  # [num_fg, num_classes]
+            pred_cls_fg = pred_conf_fg.argmax(dim=1)  # [num_fg]
+            
+            target_boxes_fg = target_bboxes_pixel[b][fg_mask_b]  # [num_fg, 4]
+            target_labels_fg = gt_labels[b][fg_mask_b].squeeze(-1).long()  # [num_fg]
+            
+            # Find Mentum and Hyoid in predictions (use highest confidence)
+            mentum_pred_mask = pred_cls_fg == self.mentum_class
+            hyoid_pred_mask = pred_cls_fg == self.hyoid_class
+            
+            # Find Mentum and Hyoid in targets
+            mentum_target_mask = target_labels_fg == self.mentum_class
+            hyoid_target_mask = target_labels_fg == self.hyoid_class
+            
+            has_mentum_pred = mentum_pred_mask.any()
+            has_hyoid_pred = hyoid_pred_mask.any()
+            has_mentum_target = mentum_target_mask.any()
+            has_hyoid_target = hyoid_target_mask.any()
+            
+            # Calculate HMD error and weight
+            if has_mentum_pred and has_hyoid_pred and has_mentum_target and has_hyoid_target:
+                # Both detected: calculate HMD error
+                # Use highest confidence predictions
+                mentum_pred_indices = torch.where(mentum_pred_mask)[0]
+                hyoid_pred_indices = torch.where(hyoid_pred_mask)[0]
+                
+                # Get confidence for mentum and hyoid classes
+                mentum_conf = pred_conf_fg[mentum_pred_indices, self.mentum_class]
+                hyoid_conf = pred_conf_fg[hyoid_pred_indices, self.hyoid_class]
+                
+                # Select highest confidence
+                mentum_idx = mentum_pred_indices[torch.argmax(mentum_conf)]
+                hyoid_idx = hyoid_pred_indices[torch.argmax(hyoid_conf)]
+                
+                # Get target boxes (use first occurrence)
+                mentum_target_idx = torch.where(mentum_target_mask)[0][0]
+                hyoid_target_idx = torch.where(hyoid_target_mask)[0][0]
+                
+                # Calculate HMD
+                pred_hmd = self._calculate_hmd_from_boxes(
+                    pred_boxes_fg[mentum_idx], pred_boxes_fg[hyoid_idx]
+                )
+                gt_hmd = self._calculate_hmd_from_boxes(
+                    target_boxes_fg[mentum_target_idx], target_boxes_fg[hyoid_target_idx]
+                )
+                
+                hmd_error = torch.abs(pred_hmd - gt_hmd)
+                weight = pred_conf_fg[mentum_idx, self.mentum_class] * pred_conf_fg[hyoid_idx, self.hyoid_class]
+                
+                hmd_errors.append(hmd_error)
+                weights.append(weight)
+                
+            elif (has_mentum_pred or has_hyoid_pred) and (has_mentum_target and has_hyoid_target):
+                # Single detected: use penalty
+                if has_mentum_pred:
+                    mentum_pred_indices = torch.where(mentum_pred_mask)[0]
+                    mentum_conf = pred_conf_fg[mentum_pred_indices, self.mentum_class].max()
+                else:
+                    mentum_conf = torch.tensor(0.0, device=device)
+                
+                if has_hyoid_pred:
+                    hyoid_pred_indices = torch.where(hyoid_pred_mask)[0]
+                    hyoid_conf = pred_conf_fg[hyoid_pred_indices, self.hyoid_class].max()
+                else:
+                    hyoid_conf = torch.tensor(0.0, device=device)
+                
+                hmd_error = torch.tensor(self.hmd_penalty_single, device=device)
+                weight = torch.min(mentum_conf, hyoid_conf) * self.hmd_penalty_coeff
+                
+                hmd_errors.append(hmd_error)
+                weights.append(weight)
+                
+            else:
+                # None detected: use maximum penalty
+                hmd_error = torch.tensor(self.hmd_penalty_none, device=device)
+                weight = torch.tensor(1.0, device=device)
+                
+                hmd_errors.append(hmd_error)
+                weights.append(weight)
+        
+        # Calculate weighted loss
+        if len(hmd_errors) > 0:
+            hmd_errors_tensor = torch.stack(hmd_errors)
+            weights_tensor = torch.stack(weights)
+            hmd_loss = (hmd_errors_tensor * weights_tensor).sum() / (weights_tensor.sum() + 1e-8)
+        else:
+            hmd_loss = torch.tensor(0.0, device=device)
+        
+        return hmd_loss
 
 
 class v8SegmentationLoss(v8DetectionLoss):
