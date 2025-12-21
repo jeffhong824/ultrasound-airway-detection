@@ -1,5 +1,7 @@
 # Data directories (large files - 106 GB)
 yolo_dataset/
+dicom_dataset/
+CVAT_annotations/
 
 # Training outputs
 ultralytics/runs/
@@ -62,4 +64,8 @@ desktop.ini
 # Dataset cache files
 *.cache
 *.joblib
+
+# HMD evaluation results
+ultralytics/hmd_comparison_*.csv
+ultralytics/evaluate/hmd_results_*.csv
 
