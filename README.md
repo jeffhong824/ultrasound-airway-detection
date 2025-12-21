@@ -25,6 +25,60 @@ pip install -e .
 
 ### Train / 訓練
 
+#### RTX 4070 配置 (Single GPU / 單 GPU)
+
+**Basic Training / 基本訓練**:
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=15 \
+  --device cuda:0 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-small-obj" \
+  --exp_name="exp10-small-obj-optimized"
+```
+
+**With HMD Loss / 啟用 HMD Loss** (for `det_123` database only / 僅適用於 `det_123` 資料庫):
+
+**Simplified / 簡化版** (using default values / 使用預設值):
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=15 \
+  --device cuda:0 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-small-obj" \
+  --exp_name="exp100-hmd_loss" \
+  --use_hmd_loss
+```
+
+**Full Command / 完整命令** (with all parameters / 包含所有參數):
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=15 \
+  --device cuda:0 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-small-obj" \
+  --exp_name="exp100-hmd_loss" \
+  --use_hmd_loss \
+  --hmd_loss_weight 0.1 \
+  --hmd_penalty_single 500.0 \
+  --hmd_penalty_none 1000.0 \
+  --hmd_penalty_coeff 0.5
+```
+
+#### H200 配置 (Multi-GPU / 多 GPU)
+
 **Basic Training / 基本訓練**:
 
 ```bash
@@ -47,7 +101,9 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
   --db_version=3 \
   --es \
+  --batch=256 \
   --epochs=15 \
+  --device 0,1 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp100-hmd_loss" \
@@ -60,7 +116,9 @@ python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
 python ultralytics/mycodes/train_yolo.py yolo11m det_123 \
   --db_version=3 \
   --es \
+  --batch=256 \
   --epochs=15 \
+  --device 0,1 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp100-hmd_loss" \
