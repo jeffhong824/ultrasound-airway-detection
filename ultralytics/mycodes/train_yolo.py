@@ -49,9 +49,18 @@ def print_validation_metrics(trainer):
     
     # Get HMD loss from additional_metrics (set by on_val_end_callback) or directly from criterion
     hmd_loss_value = None
-    if hasattr(trainer, '_additional_metrics') and "train/hmd_loss" in trainer._additional_metrics:
-        hmd_loss_value = trainer._additional_metrics["train/hmd_loss"]
-    elif hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+    # First try to get from trainer._additional_metrics
+    if hasattr(trainer, '_additional_metrics') and trainer._additional_metrics is not None:
+        if "train/hmd_loss" in trainer._additional_metrics:
+            hmd_loss_value = trainer._additional_metrics["train/hmd_loss"]
+    # If not found in trainer, try to get from validator (if available)
+    if hmd_loss_value is None and hasattr(trainer, 'validator') and trainer.validator is not None:
+        validator = trainer.validator
+        if hasattr(validator, '_additional_metrics') and validator._additional_metrics is not None:
+            if "train/hmd_loss" in validator._additional_metrics:
+                hmd_loss_value = validator._additional_metrics["train/hmd_loss"]
+    # Fallback: try to get directly from criterion
+    if hmd_loss_value is None and hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
         try:
             criterion = trainer.model.criterion
             if hasattr(criterion, 'get_avg_hmd_loss'):
@@ -97,11 +106,20 @@ def print_validation_metrics(trainer):
     rmse_pixel = 0.0
     overall_score_pixel = 0.0
     
-    if hasattr(trainer, '_additional_metrics'):
+    # First try to get from trainer._additional_metrics
+    if hasattr(trainer, '_additional_metrics') and trainer._additional_metrics is not None:
         additional_metrics = trainer._additional_metrics
         detection_rate = float(additional_metrics.get("hmd/detection_rate") or additional_metrics.get("val/hmd/detection_rate", 0))
         rmse_pixel = float(additional_metrics.get("hmd/rmse_pixel") or additional_metrics.get("val/hmd/rmse_pixel", 0))
         overall_score_pixel = float(additional_metrics.get("hmd/overall_score_pixel") or additional_metrics.get("val/hmd/overall_score_pixel", 0))
+    # If not found in trainer, try to get from validator (if available)
+    elif hasattr(trainer, 'validator') and trainer.validator is not None:
+        validator = trainer.validator
+        if hasattr(validator, '_additional_metrics') and validator._additional_metrics is not None:
+            additional_metrics = validator._additional_metrics
+            detection_rate = float(additional_metrics.get("hmd/detection_rate") or additional_metrics.get("val/hmd/detection_rate", 0))
+            rmse_pixel = float(additional_metrics.get("hmd/rmse_pixel") or additional_metrics.get("val/hmd/rmse_pixel", 0))
+            overall_score_pixel = float(additional_metrics.get("hmd/overall_score_pixel") or additional_metrics.get("val/hmd/overall_score_pixel", 0))
     
     # Always show HMD metrics section if database is det_123 and HMD loss is enabled
     # Use the same variables from above check
@@ -400,19 +418,47 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
 # Create closure to capture args for callbacks
 def create_on_val_end_callback(args):
     """Create on_val_end callback with access to args"""
-    def on_val_end_callback(trainer):
-        """Callback to extract HMD metrics after validation"""
-        # Create a dict to store additional metrics (trainer.metrics is DetMetrics object)
+    def on_val_end_callback(validator_or_trainer):
+        """Callback to extract HMD metrics after validation
+        
+        Note: on_val_end callback receives validator object, not trainer.
+        We need to handle both cases for compatibility.
+        """
+        # Create a dict to store additional metrics
         additional_metrics = {}
         import numpy as np
         import logging
         
+        # Determine if we received validator or trainer
+        # on_val_end callback receives validator, but we need trainer for some operations
+        validator = None
+        trainer = None
+        
+        # Check if it's a validator (has 'stats' attribute) or trainer (has 'validator' attribute)
+        if hasattr(validator_or_trainer, 'stats'):
+            # It's a validator
+            validator = validator_or_trainer
+            # Try to get trainer from validator if available
+            # Validator stores trainer reference during __call__ when training=True
+            if hasattr(validator, 'trainer') and validator.trainer is not None:
+                trainer = validator.trainer
+        elif hasattr(validator_or_trainer, 'validator'):
+            # It's a trainer
+            trainer = validator_or_trainer
+            validator = trainer.validator if hasattr(trainer, 'validator') else None
+        else:
+            # Unknown type, try to use as validator
+            validator = validator_or_trainer
+            # Try to get trainer from validator if available
+            if hasattr(validator, 'trainer') and validator.trainer is not None:
+                trainer = validator.trainer
+        
         # Debug: check if callback is triggered
-        logging.debug("on_val_end_callback triggered")
+        logging.debug(f"on_val_end_callback triggered: validator={validator is not None}, trainer={trainer is not None}")
         
         # Extract HMD loss from model criterion if available
         # Prefer average HMD loss (across all batches) over last batch loss
-        if hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+        if trainer is not None and hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
             try:
                 criterion = trainer.model.criterion
                 if hasattr(criterion, 'get_avg_hmd_loss'):
@@ -421,6 +467,18 @@ def create_on_val_end_callback(args):
                     additional_metrics["train/hmd_loss"] = hmd_loss_avg
                 elif hasattr(criterion, 'last_hmd_loss'):
                     # Fallback to last batch loss if average not available
+                    hmd_loss = float(criterion.last_hmd_loss)
+                    additional_metrics["train/hmd_loss"] = hmd_loss
+            except Exception:
+                pass
+        elif validator is not None and hasattr(validator, 'model') and hasattr(validator.model, 'criterion'):
+            # Try to get from validator's model directly
+            try:
+                criterion = validator.model.criterion
+                if hasattr(criterion, 'get_avg_hmd_loss'):
+                    hmd_loss_avg = criterion.get_avg_hmd_loss()
+                    additional_metrics["train/hmd_loss"] = hmd_loss_avg
+                elif hasattr(criterion, 'last_hmd_loss'):
                     hmd_loss = float(criterion.last_hmd_loss)
                     additional_metrics["train/hmd_loss"] = hmd_loss
             except Exception:
@@ -438,10 +496,8 @@ def create_on_val_end_callback(args):
         if is_det_123 and hmd_enabled:
             try:
                 # Calculate HMD metrics from validator's stats
-                # We need to access predictions and ground truth from validator
-                if hasattr(trainer, 'validator') and trainer.validator is not None:
-                    validator = trainer.validator
-                    
+                # We need validator for stats and trainer for HMD loss stats
+                if validator is not None:
                     # Get HMD metrics using validator stats and HMD loss from criterion
                     # The HMD loss already calculates real HMD distances, so we can use that
                     hmd_metrics = calculate_hmd_metrics_from_validator(
@@ -479,18 +535,47 @@ def create_on_val_end_callback(args):
             additional_metrics["hmd/rmse_pixel"] = 0.0
             additional_metrics["hmd/overall_score_pixel"] = 0.0
         
-        # Store additional metrics in trainer for print_validation_metrics to access
-        # We'll attach it as an attribute since trainer.metrics is DetMetrics object
-        trainer._additional_metrics = additional_metrics
-        
-        # Also store args in trainer for print_validation_metrics to access
-        trainer._args_database = args.database
-        trainer._args_use_hmd_loss = args.use_hmd_loss
+        # Store additional metrics for print_validation_metrics to access
+        # We need to store in a place accessible by print_validation_metrics
+        # Since on_val_end receives validator, we need to find trainer to store metrics
+        if trainer is not None:
+            # Store in trainer (preferred location)
+            trainer._additional_metrics = additional_metrics
+            trainer._args_database = args.database
+            trainer._args_use_hmd_loss = args.use_hmd_loss
+            # Also store in validator for redundancy
+            if validator is not None:
+                validator._additional_metrics = additional_metrics
+                validator._args_database = args.database
+                validator._args_use_hmd_loss = args.use_hmd_loss
+        elif validator is not None:
+            # Store in validator as fallback
+            validator._additional_metrics = additional_metrics
+            validator._args_database = args.database
+            validator._args_use_hmd_loss = args.use_hmd_loss
+            # Try to get trainer from validator if available (we added this in validator.__call__)
+            if hasattr(validator, 'trainer') and validator.trainer is not None:
+                trainer = validator.trainer
+                # Also store in trainer for consistency
+                trainer._additional_metrics = additional_metrics
+                trainer._args_database = args.database
+                trainer._args_use_hmd_loss = args.use_hmd_loss
         
         # Print validation metrics after validation completes (so we have the latest metrics)
         # Debug: force print to see if callback is working
         logging.info(f"on_val_end_callback: additional_metrics keys = {list(additional_metrics.keys())}")
-        print_validation_metrics(trainer)
+        if trainer is not None:
+            logging.debug(f"on_val_end_callback: stored metrics in trainer, trainer has _additional_metrics: {hasattr(trainer, '_additional_metrics')}")
+        if validator is not None:
+            logging.debug(f"on_val_end_callback: stored metrics in validator, validator has _additional_metrics: {hasattr(validator, '_additional_metrics')}")
+        
+        # Try to print validation metrics if trainer is available
+        if trainer is not None:
+            print_validation_metrics(trainer)
+        elif validator is not None and hasattr(validator, 'trainer') and validator.trainer is not None:
+            # Get trainer from validator and print metrics
+            trainer = validator.trainer
+            print_validation_metrics(trainer)
     
     return on_val_end_callback
 

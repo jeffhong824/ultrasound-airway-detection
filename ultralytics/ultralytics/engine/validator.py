@@ -139,6 +139,9 @@ class BaseValidator:
             (dict): Dictionary containing validation statistics.
         """
         self.training = trainer is not None
+        # Store trainer reference for callbacks (e.g., on_val_end) to access
+        if self.training:
+            self.trainer = trainer
         augment = self.args.augment and (not self.training)
         if self.training:
             self.device = trainer.device

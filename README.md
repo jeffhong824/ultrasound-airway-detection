@@ -36,6 +36,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --batch=16 \
   --epochs=15 \
   --device cuda:0 \
+  --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp10-small-obj-optimized"
@@ -52,6 +53,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --batch=16 \
   --epochs=15 \
   --device cuda:0 \
+  --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp100-hmd_loss" \
@@ -67,6 +69,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --batch=16 \
   --epochs=15 \
   --device cuda:0 \
+  --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp100-hmd_loss" \
@@ -88,6 +91,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --batch=256 \
   --epochs=15 \
   --device 0,1 \
+  --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp10-small-obj-optimized"
@@ -104,6 +108,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --batch=256 \
   --epochs=15 \
   --device 0,1 \
+  --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp100-hmd_loss" \
@@ -119,6 +124,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --batch=256 \
   --epochs=15 \
   --device 0,1 \
+  --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp100-hmd_loss" \
@@ -637,6 +643,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --batch=128 \
   --epochs=3 \
   --device 0 \
+  --seed 42 \
   --wandb \
   --project="test-project" \
   --exp_name="test-exp"
@@ -859,6 +866,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --epochs=15 \
+  --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-small-obj" \
   --exp_name="exp10-small-obj-optimized"
