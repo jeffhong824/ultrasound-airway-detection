@@ -73,9 +73,9 @@ def print_validation_metrics(trainer):
             pass
     
     # Print additional metrics
-    print(f"\n📊 Additional Metrics:")
-    print(f"   Precision: {precision:.4f} | Recall: {recall:.4f}")
-    print(f"   mAP50: {map50:.4f} | mAP50-95: {map50_95:.4f} | Fitness: {fitness:.4f}")
+    print(f"\n📊 Additional Metrics:", flush=True)
+    print(f"   Precision: {precision:.4f} | Recall: {recall:.4f}", flush=True)
+    print(f"   mAP50: {map50:.4f} | mAP50-95: {map50_95:.4f} | Fitness: {fitness:.4f}", flush=True)
     
     # HMD loss (always show if HMD loss is enabled, even if 0)
     # Check if database is det_123 and HMD loss is enabled
@@ -96,9 +96,9 @@ def print_validation_metrics(trainer):
     
     if is_det_123 and hmd_enabled:
         if hmd_loss_value is not None:
-            print(f"   HMD_loss: {hmd_loss_value:.4f}")
+            print(f"   HMD_loss: {hmd_loss_value:.4f}", flush=True)
         else:
-            print(f"   HMD_loss: 0.0000 (not calculated)")
+            print(f"   HMD_loss: 0.0000 (not calculated)", flush=True)
     
     # HMD metrics (if available and database is det_123)
     # Try to get from additional_metrics (set by on_val_end_callback)
@@ -124,12 +124,10 @@ def print_validation_metrics(trainer):
     # Always show HMD metrics section if database is det_123 and HMD loss is enabled
     # Use the same variables from above check
     if is_det_123 and hmd_enabled:
-        print(f"\n📏 HMD Metrics (det_123):")
-        print(f"   Detection_Rate: {detection_rate:.4f}")
-        print(f"   RMSE_HMD (pixel): {rmse_pixel:.2f} px")
-        print(f"   Overall_Score (pixel): {overall_score_pixel:.4f}")
-        import sys
-        sys.stdout.flush()  # Force flush to ensure output appears
+        print(f"\n📏 HMD Metrics (det_123):", flush=True)
+        print(f"   Detection_Rate: {detection_rate:.4f}", flush=True)
+        print(f"   RMSE_HMD (pixel): {rmse_pixel:.2f} px", flush=True)
+        print(f"   Overall_Score (pixel): {overall_score_pixel:.4f}", flush=True)
 
 
 def log_train_metrics(trainer):
