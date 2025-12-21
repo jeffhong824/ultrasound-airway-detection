@@ -128,6 +128,8 @@ def print_validation_metrics(trainer):
         print(f"   Detection_Rate: {detection_rate:.4f}")
         print(f"   RMSE_HMD (pixel): {rmse_pixel:.2f} px")
         print(f"   Overall_Score (pixel): {overall_score_pixel:.4f}")
+        import sys
+        sys.stdout.flush()  # Force flush to ensure output appears
 
 
 def log_train_metrics(trainer):
@@ -272,6 +274,26 @@ def calculate_hmd_from_boxes_np(mentum_box, hyoid_box):
     return float(hmd)
 
 
+def _to_numpy_safe(data):
+    """
+    Safely convert CUDA tensors to CPU numpy arrays.
+    Helper function to avoid CUDA tensor to numpy conversion errors.
+    
+    Args:
+        data: Can be torch.Tensor, list, tuple, or numpy array
+    
+    Returns:
+        numpy array or original data if already numpy
+    """
+    import torch
+    if isinstance(data, torch.Tensor):
+        return data.cpu().numpy()
+    elif isinstance(data, (list, tuple)):
+        return [_to_numpy_safe(item) for item in data]
+    else:
+        return data
+
+
 def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.0, penalty_none=1000.0):
     """
     Calculate HMD metrics from validator using collected bbox data or HMD loss stats
@@ -299,15 +321,42 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                 if hasattr(criterion, 'hmd_loss_sum') and hasattr(criterion, 'hmd_loss_count'):
                     if criterion.hmd_loss_count > 0:
                         # Average HMD loss represents average HMD error
-                        avg_hmd_loss = criterion.hmd_loss_sum / criterion.hmd_loss_count
+                        # Convert to CPU float if it's a CUDA tensor
+                        hmd_loss_sum = criterion.hmd_loss_sum
+                        hmd_loss_count = criterion.hmd_loss_count
+                        if isinstance(hmd_loss_sum, torch.Tensor):
+                            hmd_loss_sum = hmd_loss_sum.cpu().item()
+                        if isinstance(hmd_loss_count, torch.Tensor):
+                            hmd_loss_count = hmd_loss_count.cpu().item()
+                        avg_hmd_loss = hmd_loss_sum / hmd_loss_count
                         
                         # Get stats from validator for detection rate
                         if hasattr(validator, 'stats') and validator.stats is not None:
                             stats = validator.stats
                             if stats and len(stats.get('tp', [])) > 0:
-                                tp = np.concatenate(stats['tp'], 0) if stats.get('tp') else np.array([])
-                                pred_cls = np.concatenate(stats['pred_cls'], 0) if stats.get('pred_cls') else np.array([])
-                                target_cls = np.concatenate(stats['target_cls'], 0) if stats.get('target_cls') else np.array([])
+                                # Convert CUDA tensors to CPU numpy arrays if needed
+                                tp_list = stats.get('tp', [])
+                                pred_cls_list = stats.get('pred_cls', [])
+                                target_cls_list = stats.get('target_cls', [])
+                                
+                                # Convert to numpy arrays, handling CUDA tensors
+                                if tp_list:
+                                    tp_list = [_to_numpy_safe(item) for item in tp_list]
+                                    tp = np.concatenate(tp_list, 0) if tp_list else np.array([])
+                                else:
+                                    tp = np.array([])
+                                
+                                if pred_cls_list:
+                                    pred_cls_list = [_to_numpy_safe(item) for item in pred_cls_list]
+                                    pred_cls = np.concatenate(pred_cls_list, 0) if pred_cls_list else np.array([])
+                                else:
+                                    pred_cls = np.array([])
+                                
+                                if target_cls_list:
+                                    target_cls_list = [_to_numpy_safe(item) for item in target_cls_list]
+                                    target_cls = np.concatenate(target_cls_list, 0) if target_cls_list else np.array([])
+                                else:
+                                    target_cls = np.array([])
                                 
                                 # Count images with both classes in GT
                                 mentum_class = 0
@@ -318,13 +367,27 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                                 
                                 if images_with_both_gt > 0:
                                     # Count matched detections at IoU=0.5
+                                    # Note: tp and pred_cls have same length (both based on predictions)
+                                    # target_cls may have different length (based on ground truth)
                                     if len(tp) > 0 and tp.shape[1] > 0:
-                                        matched_mask = tp[:, 0]
-                                        mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class) & (target_cls == mentum_class))
-                                        hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class) & (target_cls == hyoid_class))
-                                        both_detected_count = min(mentum_matched, hyoid_matched)
+                                        matched_mask = tp[:, 0]  # Boolean array for IoU=0.5 matches
                                         
-                                        detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
+                                        # tp and pred_cls should have same length (both are per-prediction)
+                                        if len(matched_mask) == len(pred_cls):
+                                            # Count matched predictions for each class
+                                            # Only count when prediction matches ground truth (matched_mask is True)
+                                            mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class))
+                                            hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class))
+                                            
+                                            # For detection rate, we need to check if both classes are detected in the same images
+                                            # This is an approximation: count how many images have both classes detected
+                                            # We use the minimum of matched counts as a proxy
+                                            both_detected_count = min(mentum_matched, hyoid_matched)
+                                            detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
+                                        else:
+                                            # Length mismatch - use fallback calculation
+                                            logging.warning(f"⚠️ Length mismatch: tp={len(matched_mask)}, pred_cls={len(pred_cls)}")
+                                            detection_rate = 0.0
                                         # Use average HMD loss as RMSE (it's already the average HMD error)
                                         rmse_pixel = float(avg_hmd_loss)
                                         overall_score_pixel = detection_rate * rmse_pixel if rmse_pixel > 0 else 1.0
@@ -347,21 +410,49 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
             return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
         
         # Get predictions and ground truth from stats
-        tp = np.concatenate(stats['tp'], 0) if stats.get('tp') else np.array([])
-        pred_cls = np.concatenate(stats['pred_cls'], 0) if stats.get('pred_cls') else np.array([])
-        target_cls = np.concatenate(stats['target_cls'], 0) if stats.get('target_cls') else np.array([])
+        # Convert CUDA tensors to CPU numpy arrays if needed
+        tp_list = stats.get('tp', [])
+        pred_cls_list = stats.get('pred_cls', [])
+        target_cls_list = stats.get('target_cls', [])
+        
+        # Convert to numpy arrays, handling CUDA tensors
+        if tp_list:
+            tp_list = [_to_numpy_safe(item) for item in tp_list]
+            tp = np.concatenate(tp_list, 0) if tp_list else np.array([])
+        else:
+            tp = np.array([])
+        
+        if pred_cls_list:
+            pred_cls_list = [_to_numpy_safe(item) for item in pred_cls_list]
+            pred_cls = np.concatenate(pred_cls_list, 0) if pred_cls_list else np.array([])
+        else:
+            pred_cls = np.array([])
+        
+        if target_cls_list:
+            target_cls_list = [_to_numpy_safe(item) for item in target_cls_list]
+            target_cls = np.concatenate(target_cls_list, 0) if target_cls_list else np.array([])
+        else:
+            target_cls = np.array([])
         
         # Mentum class = 0, Hyoid class = 1
         mentum_class = 0
         hyoid_class = 1
         
         # Count detections for each class
+        # Note: tp and pred_cls have same length (both based on predictions)
+        # target_cls may have different length (based on ground truth)
         if len(tp) > 0 and tp.shape[1] > 0:
             matched_mask = tp[:, 0]  # Matches at IoU=0.5
             
+            # tp and pred_cls should have same length (both are per-prediction)
+            if len(matched_mask) != len(pred_cls):
+                logging.warning(f"⚠️ Length mismatch in fallback: tp={len(matched_mask)}, pred_cls={len(pred_cls)}")
+                return {'detection_rate': 0.0, 'rmse_pixel': penalty_none, 'overall_score_pixel': 0.0}
+            
             # Count matched predictions for each class
-            mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class) & (target_cls == mentum_class))
-            hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class) & (target_cls == hyoid_class))
+            # Only count when prediction matches ground truth (matched_mask is True)
+            mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class))
+            hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class))
             
             # Count total ground truth for each class
             mentum_gt_count = np.sum(target_cls == mentum_class)
@@ -569,13 +660,76 @@ def create_on_val_end_callback(args):
         if validator is not None:
             logging.debug(f"on_val_end_callback: stored metrics in validator, validator has _additional_metrics: {hasattr(validator, '_additional_metrics')}")
         
-        # Try to print validation metrics if trainer is available
+        # Always try to print validation metrics
+        # Try multiple ways to get trainer
+        trainer_for_print = None
+        
+        # Method 1: Direct trainer from callback
         if trainer is not None:
-            print_validation_metrics(trainer)
-        elif validator is not None and hasattr(validator, 'trainer') and validator.trainer is not None:
-            # Get trainer from validator and print metrics
-            trainer = validator.trainer
-            print_validation_metrics(trainer)
+            trainer_for_print = trainer
+            logging.debug("Using trainer from callback parameter")
+        
+        # Method 2: From validator.trainer
+        if trainer_for_print is None and validator is not None:
+            if hasattr(validator, 'trainer') and validator.trainer is not None:
+                trainer_for_print = validator.trainer
+                logging.debug("Using trainer from validator.trainer")
+        
+        # Method 3: Try to get from validator's model (if it has a reference)
+        if trainer_for_print is None and validator is not None:
+            # Check if validator has any reference to trainer through its attributes
+            for attr_name in ['trainer', '_trainer', 'parent_trainer']:
+                if hasattr(validator, attr_name):
+                    attr_value = getattr(validator, attr_name)
+                    if attr_value is not None and hasattr(attr_value, 'metrics'):
+                        trainer_for_print = attr_value
+                        logging.debug(f"Using trainer from validator.{attr_name}")
+                        break
+        
+        # If we still don't have trainer, create a minimal wrapper from validator
+        if trainer_for_print is None and validator is not None:
+            # Create a minimal trainer-like object from validator
+            class MinimalTrainerWrapper:
+                def __init__(self, validator, additional_metrics, args_database, args_use_hmd_loss):
+                    self.validator = validator
+                    self._additional_metrics = additional_metrics
+                    self._args_database = args_database
+                    self._args_use_hmd_loss = args_use_hmd_loss
+                    # Try to get metrics from validator
+                    if hasattr(validator, 'metrics'):
+                        self.metrics = validator.metrics
+                    else:
+                        self.metrics = None
+                    # Try to get args
+                    if hasattr(validator, 'args'):
+                        self.args = validator.args
+                    else:
+                        self.args = type('Args', (), {'database': args_database, 'use_hmd_loss': args_use_hmd_loss})()
+                    # Try to get model
+                    if hasattr(validator, 'model'):
+                        self.model = validator.model
+                    else:
+                        self.model = None
+            
+            trainer_for_print = MinimalTrainerWrapper(
+                validator, 
+                additional_metrics, 
+                args.database, 
+                args.use_hmd_loss
+            )
+            logging.debug("Created MinimalTrainerWrapper from validator")
+        
+        if trainer_for_print is not None:
+            try:
+                logging.info(f"📊 Calling print_validation_metrics with trainer type: {type(trainer_for_print).__name__}")
+                print_validation_metrics(trainer_for_print)
+                logging.info("✅ print_validation_metrics completed")
+            except Exception as e:
+                logging.error(f"❌ Failed to print validation metrics: {e}")
+                import traceback
+                logging.error(traceback.format_exc())
+        else:
+            logging.error("❌ Cannot print validation metrics: trainer not available and cannot create wrapper")
     
     return on_val_end_callback
 
