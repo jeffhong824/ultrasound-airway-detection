@@ -27,8 +27,14 @@ pip install -e .
 
 #### 實驗設計 / Experiment Design
 
-本專案使用 `ultrasound-det_123_ES-v3` 作為實驗專案名稱，包含以下實驗：
+**重要提示 / Important Note**: 
+為了確保實驗結果的可比較性，不同硬件配置（RTX 4070 和 H200）使用**不同的 project 名稱**，避免因 batch size 差異導致的訓練動態不同影響比較。
 
+**Project 命名規則 / Project Naming Convention**:
+- RTX 4070 (batch=16): `ultrasound-det_123_ES-v3-4070`
+- H200 (batch=256): `ultrasound-det_123_ES-v3-h200`
+
+每個 project 包含以下實驗：
 - **實驗 0 (exp0)**: 基準實驗，不使用 HMD Loss
 - **實驗 1 (exp1)**: 使用 HMD Loss 進行訓練
 
@@ -47,7 +53,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3" \
+  --project="ultrasound-det_123_ES-v3-4070" \
   --exp_name="exp0"
 ```
 
@@ -64,7 +70,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3" \
+  --project="ultrasound-det_123_ES-v3-4070" \
   --exp_name="exp1" \
   --use_hmd_loss
 ```
@@ -80,7 +86,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3" \
+  --project="ultrasound-det_123_ES-v3-4070" \
   --exp_name="exp1" \
   --use_hmd_loss \
   --hmd_loss_weight 0.1 \
@@ -102,7 +108,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device 0,1 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3" \
+  --project="ultrasound-det_123_ES-v3-h200" \
   --exp_name="exp0"
 ```
 
@@ -119,7 +125,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device 0,1 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3" \
+  --project="ultrasound-det_123_ES-v3-h200" \
   --exp_name="exp1" \
   --use_hmd_loss
 ```
@@ -135,7 +141,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device 0,1 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3" \
+  --project="ultrasound-det_123_ES-v3-h200" \
   --exp_name="exp1" \
   --use_hmd_loss \
   --hmd_loss_weight 0.1 \
@@ -665,7 +671,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 ```bash
 # For production training / 正式訓練
 python ultralytics/mycodes/best_epoch.py detect 1 \
-  --run_name="ultrasound-det_123_ES-v3/exp0"
+  --run_name="ultrasound-det_123_ES-v3-4070/exp0"
 
 # For test training / 測試訓練
 python ultralytics/mycodes/best_epoch.py detect 1 \
@@ -879,7 +885,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --epochs=15 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3" \
+  --project="ultrasound-det_123_ES-v3-4070" \
   --exp_name="exp0"
 ```
 
@@ -888,7 +894,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 ```bash
 python ultralytics/mycodes/test_yolo.py detect "" det_123 \
   --db_version 3 \
-  --weights ultralytics/runs/train/ultrasound-det_123_ES-v3/exp0/weights/best.pt \
+  --weights ultralytics/runs/train/ultrasound-det_123_ES-v3-4070/exp0/weights/best.pt \
   --dev cuda:0 \
   --batch_size 4 \
   --output-name test_exp0
