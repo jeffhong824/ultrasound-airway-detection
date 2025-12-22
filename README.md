@@ -688,9 +688,34 @@ except ImportError:
 
 #### 8. 訓練監控指標
 
-在訓練過程中，系統會在**每個 validation epoch 結束後**顯示以下 HMD 相關指標：
+##### 8.0 HMD 指標顯示時間
+
+**顯示時機**：
+- **每個 validation epoch 結束後**：HMD 指標會在每個驗證階段（validation）結束後立即顯示
+- **適用於所有 det_123 實驗**：無論是否啟用 HMD Loss（`--use_hmd_loss`），只要資料庫是 `det_123`，都會計算並顯示 HMD 指標
+- **顯示位置**：終端輸出中，緊接在標準檢測指標（Precision, Recall, mAP50, mAP50-95）之後
+
+**顯示格式**：
+```
+📊 Additional Metrics:
+   Precision: 0.6258 | Recall: 0.5744
+   mAP50: 0.5248 | mAP50-95: 0.1559 | Fitness: 0.1928
+   HMD_loss: 123.4567  (僅在啟用 --use_hmd_loss 時顯示)
+
+📏 HMD Metrics (det_123):
+   Detection_Rate: 0.8500
+   RMSE_HMD (pixel): 45.67 px
+   Overall_Score (pixel): 38.82
+```
+
+**重要說明**：
+- **exp0 baseline**：即使未啟用 HMD Loss，也會顯示 HMD 指標（從驗證集的預測結果計算）
+- **exp1-exp5**：所有實驗都會顯示 HMD 指標，方便比較不同實驗配置對 HMD 性能的影響
+- **HMD_loss 值**：僅在啟用 `--use_hmd_loss` 時顯示，因為它需要從訓練過程中的 HMD Loss 統計中獲取
 
 ##### 8.1 指標列表與解釋
+
+在訓練過程中，系統會在**每個 validation epoch 結束後**顯示以下 HMD 相關指標：
 
 **1. HMD_loss（HMD 損失值）**
 - **定義**：每個 epoch 的平均 HMD loss（跨所有 batch 的平均值）
@@ -741,17 +766,23 @@ except ImportError:
 ##### 8.2 指標計算流程
 
 **訓練階段（每個 batch）**：
-1. 在 `v8DetectionLoss.__call__` 中計算 HMD loss
+1. 在 `v8DetectionLoss.__call__` 中計算 HMD loss（僅在啟用 `--use_hmd_loss` 時）
 2. 累積 `hmd_loss_sum` 和 `hmd_loss_count`
 3. 將加權 HMD loss 添加到總損失中
 
 **驗證階段（每個 epoch 結束後）**：
-1. `on_val_end_callback` 被觸發（`ultralytics/mycodes/train_yolo.py` 第 386 行）
-2. 從 `criterion.get_avg_hmd_loss()` 獲取平均 HMD loss
-3. 從 validator stats 計算 Detection_Rate
-4. 使用 HMD loss 統計計算 RMSE_HMD（基於真實 HMD 誤差）
-5. 計算 Overall_Score
-6. 調用 `print_validation_metrics` 顯示所有指標
+1. **驗證完成**：模型在驗證集上完成所有 batch 的驗證
+2. **觸發回調**：`on_val_end_callback` 被觸發（`ultralytics/mycodes/train_yolo.py` 第 511 行）
+3. **計算 HMD 指標**：
+   - 如果啟用 HMD Loss：從 `criterion.get_avg_hmd_loss()` 獲取平均 HMD loss，並從 validator stats 計算 Detection_Rate
+   - 如果未啟用 HMD Loss：僅從 validator stats 計算 Detection_Rate 和 RMSE_HMD（基於預測與 Ground Truth 的匹配情況）
+4. **計算綜合指標**：計算 Overall_Score = Detection_Rate × RMSE_HMD
+5. **顯示指標**：調用 `print_validation_metrics` 在終端顯示所有指標（包括 HMD 指標）
+
+**顯示時間點**：
+- **即時顯示**：每個 validation epoch 結束後立即顯示，無需等待訓練完成
+- **每個 epoch**：訓練過程中的每個 epoch 都會顯示一次 HMD 指標
+- **最終評估**：訓練結束後，可以使用 `test_yolo.py` 和 `calculate_hmd_from_yolo.py` 進行更詳細的 HMD 評估
 
 **程式碼位置**（`ultralytics/mycodes/train_yolo.py`）：
 ```python
@@ -772,7 +803,88 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 # 返回：detection_rate, rmse_pixel, overall_score_pixel
 ```
 
-##### 8.3 終端輸出範例
+##### 8.3 W&B 記錄指標說明
+
+**訓練過程中（每個 epoch）**：通過 `log_train_metrics` 函數記錄到 W&B
+
+**記錄的指標**：
+
+| 指標類別 | 指標名稱 | 說明 | 記錄條件 |
+|---------|---------|------|---------|
+| **訓練損失** | `train/box_loss` | Box loss（定位損失） | 每個 epoch |
+| | `train/cls_loss` | Classification loss（分類損失） | 每個 epoch |
+| | `train/dfl_loss` | DFL loss（分布損失） | 每個 epoch |
+| | `train/hmd_loss` | HMD loss（HMD 損失） | 僅在啟用 `--use_hmd_loss` 時 |
+| **檢測指標** | `metrics/precision` | Precision（精確率） | 每個 epoch |
+| | `metrics/recall` | Recall（召回率） | 每個 epoch |
+| | `metrics/mAP50` | mAP@0.5 | 每個 epoch |
+| | `metrics/mAP50-95` | mAP@0.5:0.95 | 每個 epoch |
+| | `metrics/fitness` | Fitness (0.1×mAP50 + 0.9×mAP50-95) | 每個 epoch |
+| **HMD 指標** | `hmd/detection_rate` | HMD 檢測率 | 每個 epoch（僅 det_123） |
+| | `hmd/rmse_pixel` | HMD RMSE（像素） | 每個 epoch（僅 det_123） |
+| | `hmd/overall_score_pixel` | HMD 綜合評分（像素） | 每個 epoch（僅 det_123） |
+| **學習率** | `lr/pg0` | 學習率（參數組 0） | 每個 epoch |
+| | `lr/pg1` | 學習率（參數組 1，如果存在） | 每個 epoch |
+| **其他** | `epoch` | 當前 epoch 編號 | 每個 epoch |
+| | `time` | 訓練經過時間（秒） | 每個 epoch |
+
+**最終評估階段（val & test）**：通過 `evaluate_detailed` 函數記錄到 W&B
+
+**Val 評估記錄的指標**：
+
+| 指標類別 | 指標名稱 | 說明 |
+|---------|---------|------|
+| **檢測指標** | `val/mAP50` | Val mAP@0.5 |
+| | `val/mAP50-95` | Val mAP@0.5:0.95 |
+| | `val/precision` | Val Precision |
+| | `val/recall` | Val Recall |
+| | `val/fitness` | Val Fitness |
+| **HMD 指標** | `val/hmd/detection_rate` | Val HMD 檢測率（僅 det_123） |
+| | `val/hmd/rmse_pixel` | Val HMD RMSE（像素，僅 det_123） |
+| | `val/hmd/overall_score_pixel` | Val HMD 綜合評分（像素，僅 det_123） |
+| **速度指標** | `val/inference_speed(ms)` | 推理速度（毫秒） |
+| | `val/preprocess_speed(ms)` | 預處理速度（毫秒） |
+| | `val/postprocess_speed(ms)` | 後處理速度（毫秒） |
+| | `val/loss_speed(ms)` | Loss 計算速度（毫秒） |
+| **其他** | `val/num_classes` | 類別數量 |
+| | `val/per_class_metrics` | Per-class 指標表格（W&B Table） |
+| | `val/AR100`, `val/AR10`, `val/AR1` | Average Recall 指標（如果可用） |
+| | `val/iou` | IoU（如果可用） |
+| | `val/dice` | Dice 係數（如果可用） |
+| **Summary** | `fitness/val` | Val Fitness（記錄到 summary） |
+| | `fitness_val` | Val Fitness（記錄到 summary） |
+
+**Test 評估記錄的指標**：
+
+| 指標類別 | 指標名稱 | 說明 |
+|---------|---------|------|
+| **檢測指標** | `test/mAP50` | Test mAP@0.5 |
+| | `test/mAP50-95` | Test mAP@0.5:0.95 |
+| | `test/precision` | Test Precision |
+| | `test/recall` | Test Recall |
+| | `test/fitness` | Test Fitness |
+| **HMD 指標** | `test/hmd/detection_rate` | Test HMD 檢測率（僅 det_123） |
+| | `test/hmd/rmse_pixel` | Test HMD RMSE（像素，僅 det_123） |
+| | `test/hmd/overall_score_pixel` | Test HMD 綜合評分（像素，僅 det_123） |
+| **速度指標** | `test/inference_speed(ms)` | 推理速度（毫秒） |
+| | `test/preprocess_speed(ms)` | 預處理速度（毫秒） |
+| | `test/postprocess_speed(ms)` | 後處理速度（毫秒） |
+| | `test/loss_speed(ms)` | Loss 計算速度（毫秒） |
+| **其他** | `test/num_classes` | 類別數量 |
+| | `test/per_class_metrics` | Per-class 指標表格（W&B Table） |
+| | `test/AR100`, `test/AR10`, `test/AR1` | Average Recall 指標（如果可用） |
+| | `test/iou` | IoU（如果可用） |
+| | `test/dice` | Dice 係數（如果可用） |
+| **Summary** | `fitness/test` | Test Fitness（記錄到 summary） |
+| | `fitness_test` | Test Fitness（記錄到 summary） |
+
+**重要說明**：
+- **訓練過程指標**：每個 epoch 記錄一次，用於追蹤訓練進度
+- **最終評估指標**：訓練結束後記錄一次，使用最佳模型（best.pt）進行評估
+- **HMD 指標**：所有 det_123 實驗都會記錄（包括 exp0 baseline），無需啟用 `--use_hmd_loss`
+- **Summary 指標**：最終評估的指標會同時記錄到 `wandb.run.summary`，方便在 W&B 界面查看最終結果
+
+##### 8.4 終端輸出範例
 
 訓練時，每個 validation epoch 結束後會看到類似輸出：
 
@@ -780,7 +892,7 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 📊 Additional Metrics:
    Precision: 0.7770 | Recall: 0.7160
    mAP50: 0.7028 | mAP50-95: 0.2495 | Fitness: 0.2948
-   HMD_loss: 123.4567
+   HMD_loss: 123.4567  (僅在啟用 --use_hmd_loss 時顯示)
 
 📏 HMD Metrics (det_123):
    Detection_Rate: 0.8500

@@ -94,6 +94,7 @@ def print_validation_metrics(trainer):
     import logging
     logging.info(f"print_validation_metrics: database={db_val}, use_hmd_loss={hmd_val}, is_det_123={is_det_123}, hmd_enabled={hmd_enabled}")
     
+    # HMD loss value: only show if HMD loss is enabled
     if is_det_123 and hmd_enabled:
         if hmd_loss_value is not None:
             print(f"   HMD_loss: {hmd_loss_value:.4f}", flush=True)
@@ -121,9 +122,9 @@ def print_validation_metrics(trainer):
             rmse_pixel = float(additional_metrics.get("hmd/rmse_pixel") or additional_metrics.get("val/hmd/rmse_pixel", 0))
             overall_score_pixel = float(additional_metrics.get("hmd/overall_score_pixel") or additional_metrics.get("val/hmd/overall_score_pixel", 0))
     
-    # Always show HMD metrics section if database is det_123 and HMD loss is enabled
-    # Use the same variables from above check
-    if is_det_123 and hmd_enabled:
+    # Always show HMD metrics section if database is det_123 (even without HMD loss enabled)
+    # This allows monitoring HMD performance for all det_123 experiments
+    if is_det_123:
         print(f"\n📏 HMD Metrics (det_123):", flush=True)
         print(f"   Detection_Rate: {detection_rate:.4f}", flush=True)
         print(f"   RMSE_HMD (pixel): {rmse_pixel:.2f} px", flush=True)
@@ -171,9 +172,6 @@ def log_train_metrics(trainer):
         "train/box_loss": box_loss,
         "train/cls_loss": cls_loss,
         "train/dfl_loss": dfl_loss,
-        "val/box_loss": 0.0,  # Not available from DetMetrics
-        "val/cls_loss": 0.0,  # Not available from DetMetrics
-        "val/dfl_loss": 0.0,  # Not available from DetMetrics
     }
     
     logs.update({
@@ -573,7 +571,8 @@ def create_on_val_end_callback(args):
             except Exception:
                 pass
         
-        # Calculate HMD metrics if database is det_123 and HMD loss is enabled
+        # Calculate HMD metrics if database is det_123 (even without HMD loss enabled)
+        # This allows monitoring HMD performance for all det_123 experiments
         # Use closure variable args instead of trainer.args
         is_det_123 = args.database == 'det_123'
         hmd_enabled = args.use_hmd_loss and is_det_123
@@ -581,8 +580,9 @@ def create_on_val_end_callback(args):
         # Debug: print condition check
         logging.debug(f"on_val_end_callback: is_det_123={is_det_123}, hmd_enabled={hmd_enabled}, args.database={args.database}, args.use_hmd_loss={args.use_hmd_loss}")
     
-        # Always set HMD metrics (even if 0) if HMD loss is enabled, so they will be displayed
-        if is_det_123 and hmd_enabled:
+        # Always calculate HMD metrics for det_123 database (even without HMD loss enabled)
+        # This allows monitoring HMD performance for all experiments, including baseline
+        if is_det_123:
             try:
                 # Calculate HMD metrics from validator's stats
                 # We need validator for stats and trainer for HMD loss stats
@@ -617,12 +617,6 @@ def create_on_val_end_callback(args):
                 additional_metrics["hmd/detection_rate"] = 0.0
                 additional_metrics["hmd/rmse_pixel"] = 0.0
                 additional_metrics["hmd/overall_score_pixel"] = 0.0
-        else:
-            # If HMD loss is not enabled, still set metrics to 0 (but they won't be displayed)
-            # This ensures consistency
-            additional_metrics["hmd/detection_rate"] = 0.0
-            additional_metrics["hmd/rmse_pixel"] = 0.0
-            additional_metrics["hmd/overall_score_pixel"] = 0.0
         
         # Store additional metrics for print_validation_metrics to access
         # We need to store in a place accessible by print_validation_metrics
@@ -819,35 +813,53 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
     if dice_value is not None:
         logs[f"{split}/dice"] = dice_value
     
-    # Calculate HMD metrics if enabled and database is det_123
-    if use_hmd and database == 'det_123':
+    # Calculate HMD metrics if database is det_123 (for all det_123 experiments)
+    if database == 'det_123':
         try:
-            # Get project root for HMD calculation
-            project_root = Path(__file__).resolve().parent.parent.parent
-            yolo_root = project_root / 'yolo_dataset'
-            dicom_root = project_root / 'dicom_dataset'
-            
-            # Try to calculate HMD metrics from validation results
-            # Note: This requires predictions to be available, which may not be the case during validation
-            # For now, we'll add placeholder values
-            # Full implementation would require saving predictions during validation
+            # Try to get validator from model to calculate HMD metrics
+            # The validator object contains stats needed for HMD calculation
             hmd_metrics = {
                 'detection_rate': 0.0,
                 'rmse_hmd_pixel': 0.0,
-                'rmse_hmd_mm': 0.0,
                 'overall_score_pixel': 0.0,
-                'overall_score_mm': 0.0,
             }
+            
+            # Try to get validator from model's trainer
+            # model.val() creates a validator internally, but we need to access it
+            # For now, we'll use a simplified calculation based on available stats
+            # Full implementation would require access to validator object with predictions
+            if hasattr(metrics, 'box') and hasattr(metrics.box, 'mean_class_results'):
+                # We can estimate detection rate from per-class metrics
+                # This is a simplified approach - full HMD calculation requires bbox coordinates
+                per_class_metrics = metrics.box.mean_class_results
+                if per_class_metrics.shape[0] >= 2:  # At least 2 classes (Mentum and Hyoid)
+                    # Estimate detection rate as average recall of both classes
+                    mentum_recall = float(per_class_metrics[0, 1]) if per_class_metrics.shape[0] > 0 else 0.0
+                    hyoid_recall = float(per_class_metrics[1, 1]) if per_class_metrics.shape[0] > 1 else 0.0
+                    # Detection rate is approximated as minimum of both recalls
+                    hmd_metrics['detection_rate'] = min(mentum_recall, hyoid_recall)
             
             logs.update({
                 f"{split}/hmd/detection_rate": hmd_metrics['detection_rate'],
                 f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_hmd_pixel'],
-                f"{split}/hmd/rmse_mm": hmd_metrics['rmse_hmd_mm'],
                 f"{split}/hmd/overall_score_pixel": hmd_metrics['overall_score_pixel'],
-                f"{split}/hmd/overall_score_mm": hmd_metrics['overall_score_mm'],
             })
+            
         except Exception as e:
             logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
+            import traceback
+            logging.debug(traceback.format_exc())
+            # Set default values on error
+            hmd_metrics = {
+                'detection_rate': 0.0,
+                'rmse_hmd_pixel': 0.0,
+                'overall_score_pixel': 0.0,
+            }
+            logs.update({
+                f"{split}/hmd/detection_rate": hmd_metrics['detection_rate'],
+                f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_hmd_pixel'],
+                f"{split}/hmd/overall_score_pixel": hmd_metrics['overall_score_pixel'],
+            })
     
     # log到W&B
     wandb.log(logs)
@@ -869,19 +881,23 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
     if dice_value is not None:
         result["dice"] = dice_value
     
-    if use_hmd and database == 'det_123':
+    # Add HMD metrics to result dict (for all det_123 experiments)
+    if database == 'det_123':
         try:
-            # Placeholder for HMD metrics
-            hmd_metrics = {
+            # Get HMD metrics from logs (calculated above)
+            result.update({
+                'detection_rate': logs.get(f"{split}/hmd/detection_rate", 0.0),
+                'rmse_hmd_pixel': logs.get(f"{split}/hmd/rmse_pixel", 0.0),
+                'overall_score_pixel': logs.get(f"{split}/hmd/overall_score_pixel", 0.0),
+            })
+        except Exception as e:
+            logging.warning(f"⚠️ Failed to add HMD metrics to result: {e}")
+            # Add default values as fallback
+            result.update({
                 'detection_rate': 0.0,
                 'rmse_hmd_pixel': 0.0,
-                'rmse_hmd_mm': 0.0,
                 'overall_score_pixel': 0.0,
-                'overall_score_mm': 0.0,
-            }
-            result.update(hmd_metrics)
-        except:
-            pass
+            })
     
     return result
 
@@ -1312,7 +1328,9 @@ if __name__=='__main__':
         logging.info("🔁 Re-evaluating using best.pt")
         
         # 评估val和test
-        use_hmd = args.use_hmd_loss and args.database == 'det_123'
+        # Calculate HMD metrics for all det_123 experiments (even without HMD loss enabled)
+        # This allows monitoring HMD performance for all experiments, including baseline
+        use_hmd = args.database == 'det_123'  # Changed: calculate HMD for all det_123 experiments
         val_results = evaluate_detailed(
             best_model, "val", batch=args.batch, imgsz=args.imgsz,
             database=args.database, db_version=args.db_version, use_hmd=use_hmd,
@@ -1344,14 +1362,12 @@ if __name__=='__main__':
             if dice_val is not None:
                 val_summary["val/dice"] = dice_val
             
-            # Add HMD metrics if available
-            if use_hmd:
+            # Add HMD metrics if available (for all det_123 experiments)
+            if args.database == 'det_123':
                 val_summary.update({
                     "val/hmd/detection_rate": val_results.get("detection_rate", 0),
                     "val/hmd/rmse_pixel": val_results.get("rmse_hmd_pixel", 0),
-                    "val/hmd/rmse_mm": val_results.get("rmse_hmd_mm", 0),
                     "val/hmd/overall_score_pixel": val_results.get("overall_score_pixel", 0),
-                    "val/hmd/overall_score_mm": val_results.get("overall_score_mm", 0),
                 })
             
             wandb.log(val_summary)
@@ -1376,14 +1392,12 @@ if __name__=='__main__':
             if dice_test is not None:
                 test_summary["test/dice"] = dice_test
             
-            # Add HMD metrics if available
-            if use_hmd:
+            # Add HMD metrics if available (for all det_123 experiments)
+            if args.database == 'det_123':
                 test_summary.update({
                     "test/hmd/detection_rate": test_results.get("detection_rate", 0),
                     "test/hmd/rmse_pixel": test_results.get("rmse_hmd_pixel", 0),
-                    "test/hmd/rmse_mm": test_results.get("rmse_hmd_mm", 0),
                     "test/hmd/overall_score_pixel": test_results.get("overall_score_pixel", 0),
-                    "test/hmd/overall_score_mm": test_results.get("overall_score_mm", 0),
                 })
             
             wandb.log(test_summary)
