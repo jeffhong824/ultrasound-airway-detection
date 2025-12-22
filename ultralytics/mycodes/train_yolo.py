@@ -184,11 +184,9 @@ def log_train_metrics(trainer):
     
     # IoU and Dice removed - they are bbox-level metrics, not epoch-level
     
-    # HMD loss (if available)
+    # HMD loss (if available) - get directly from criterion since on_train_epoch_end is called before on_val_end
     hmd_loss_value = None
-    if hasattr(trainer, '_additional_metrics') and "train/hmd_loss" in trainer._additional_metrics:
-        hmd_loss_value = trainer._additional_metrics["train/hmd_loss"]
-    elif hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+    if hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
         try:
             criterion = trainer.model.criterion
             if hasattr(criterion, 'get_avg_hmd_loss'):
@@ -198,20 +196,29 @@ def log_train_metrics(trainer):
         except Exception:
             pass
     
+    # Also check _additional_metrics as fallback (in case on_val_end was called first)
+    if hmd_loss_value is None and hasattr(trainer, '_additional_metrics') and "train/hmd_loss" in trainer._additional_metrics:
+        hmd_loss_value = trainer._additional_metrics["train/hmd_loss"]
+    
     if hmd_loss_value is not None:
-        logs["train/hmd_loss"] = hmd_loss_value
+        logs["train/hmd_loss"] = float(hmd_loss_value)
     
     # HMD metrics (always log for det_123, even if 0) - pixel based only
+    # Use val/hmd/ prefix for validation metrics in W&B
     if hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and trainer.args.database == 'det_123':
         if hasattr(trainer, '_additional_metrics'):
             additional_metrics = trainer._additional_metrics
-            logs["hmd/detection_rate"] = float(additional_metrics.get("hmd/detection_rate") or additional_metrics.get("val/hmd/detection_rate", 0))
-            logs["hmd/rmse_pixel"] = float(additional_metrics.get("hmd/rmse_pixel") or additional_metrics.get("val/hmd/rmse_pixel", 0))
-            logs["hmd/overall_score_pixel"] = float(additional_metrics.get("hmd/overall_score_pixel") or additional_metrics.get("val/hmd/overall_score_pixel", 0))
+            # Try both naming conventions (hmd/... and val/hmd/...)
+            detection_rate = float(additional_metrics.get("val/hmd/detection_rate") or additional_metrics.get("hmd/detection_rate", 0))
+            rmse_pixel = float(additional_metrics.get("val/hmd/rmse_pixel") or additional_metrics.get("hmd/rmse_pixel", 0))
+            overall_score_pixel = float(additional_metrics.get("val/hmd/overall_score_pixel") or additional_metrics.get("hmd/overall_score_pixel", 0))
+            logs["val/hmd/detection_rate"] = detection_rate
+            logs["val/hmd/rmse_pixel"] = rmse_pixel
+            logs["val/hmd/overall_score_pixel"] = overall_score_pixel
         else:
-            logs["hmd/detection_rate"] = 0.0
-            logs["hmd/rmse_pixel"] = 0.0
-            logs["hmd/overall_score_pixel"] = 0.0
+            logs["val/hmd/detection_rate"] = 0.0
+            logs["val/hmd/rmse_pixel"] = 0.0
+            logs["val/hmd/overall_score_pixel"] = 0.0
     
     # 记录学习率
     for i, pg in enumerate(trainer.optimizer.param_groups):
@@ -545,18 +552,27 @@ def create_on_val_end_callback(args):
         
         # Extract HMD loss from model criterion if available
         # Prefer average HMD loss (across all batches) over last batch loss
+        # In validation, hmd_loss_count might be 0, so use last_hmd_loss as fallback
+        hmd_loss_value = None
         if trainer is not None and hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
             try:
                 criterion = trainer.model.criterion
                 if hasattr(criterion, 'get_avg_hmd_loss'):
                     # Get average HMD loss across all batches in this epoch
                     hmd_loss_avg = criterion.get_avg_hmd_loss()
-                    additional_metrics["train/hmd_loss"] = hmd_loss_avg
+                    # If average is 0 but count is also 0, try last_hmd_loss
+                    if hmd_loss_avg == 0.0 and hasattr(criterion, 'hmd_loss_count') and criterion.hmd_loss_count == 0:
+                        if hasattr(criterion, 'last_hmd_loss') and criterion.last_hmd_loss != 0.0:
+                            hmd_loss_value = float(criterion.last_hmd_loss)
+                        else:
+                            hmd_loss_value = 0.0
+                    else:
+                        hmd_loss_value = hmd_loss_avg
                 elif hasattr(criterion, 'last_hmd_loss'):
                     # Fallback to last batch loss if average not available
-                    hmd_loss = float(criterion.last_hmd_loss)
-                    additional_metrics["train/hmd_loss"] = hmd_loss
-            except Exception:
+                    hmd_loss_value = float(criterion.last_hmd_loss)
+            except Exception as e:
+                logging.debug(f"Failed to get HMD loss from trainer criterion: {e}")
                 pass
         elif validator is not None and hasattr(validator, 'model') and hasattr(validator.model, 'criterion'):
             # Try to get from validator's model directly
@@ -564,12 +580,45 @@ def create_on_val_end_callback(args):
                 criterion = validator.model.criterion
                 if hasattr(criterion, 'get_avg_hmd_loss'):
                     hmd_loss_avg = criterion.get_avg_hmd_loss()
-                    additional_metrics["train/hmd_loss"] = hmd_loss_avg
+                    # If average is 0 but count is also 0, try last_hmd_loss
+                    if hmd_loss_avg == 0.0 and hasattr(criterion, 'hmd_loss_count') and criterion.hmd_loss_count == 0:
+                        if hasattr(criterion, 'last_hmd_loss') and criterion.last_hmd_loss != 0.0:
+                            hmd_loss_value = float(criterion.last_hmd_loss)
+                        else:
+                            hmd_loss_value = 0.0
+                    else:
+                        hmd_loss_value = hmd_loss_avg
                 elif hasattr(criterion, 'last_hmd_loss'):
-                    hmd_loss = float(criterion.last_hmd_loss)
-                    additional_metrics["train/hmd_loss"] = hmd_loss
-            except Exception:
+                    hmd_loss_value = float(criterion.last_hmd_loss)
+            except Exception as e:
+                logging.debug(f"Failed to get HMD loss from validator criterion: {e}")
                 pass
+        
+        # Store HMD loss if we got a value (including 0.0)
+        if hmd_loss_value is not None:
+            additional_metrics["train/hmd_loss"] = hmd_loss_value
+            logging.debug(f"HMD loss extracted: {hmd_loss_value} (from {'trainer' if trainer is not None else 'validator'})")
+        else:
+            # Debug: log why HMD loss couldn't be extracted
+            if trainer is not None:
+                has_model = hasattr(trainer, 'model')
+                has_criterion = has_model and hasattr(trainer.model, 'criterion')
+                logging.debug(f"HMD loss not found - trainer: has_model={has_model}, has_criterion={has_criterion}")
+            elif validator is not None:
+                has_model = hasattr(validator, 'model')
+                has_criterion = has_model and hasattr(validator.model, 'criterion')
+                logging.debug(f"HMD loss not found - validator: has_model={has_model}, has_criterion={has_criterion}")
+                if has_criterion:
+                    criterion = validator.model.criterion
+                    has_get_avg = hasattr(criterion, 'get_avg_hmd_loss')
+                    has_last = hasattr(criterion, 'last_hmd_loss')
+                    has_count = hasattr(criterion, 'hmd_loss_count')
+                    if has_count:
+                        count = criterion.hmd_loss_count
+                        last = criterion.last_hmd_loss if has_last else None
+                        logging.debug(f"Criterion state: hmd_loss_count={count}, last_hmd_loss={last}, has_get_avg={has_get_avg}")
+            else:
+                logging.debug("HMD loss not found - neither trainer nor validator available")
         
         # Calculate HMD metrics if database is det_123 (even without HMD loss enabled)
         # This allows monitoring HMD performance for all det_123 experiments
@@ -596,6 +645,11 @@ def create_on_val_end_callback(args):
                         penalty_none=args.hmd_penalty_none
                     )
                 
+                    # Store with val/hmd/ prefix for consistency with W&B logging
+                    additional_metrics["val/hmd/detection_rate"] = hmd_metrics.get('detection_rate', 0.0)
+                    additional_metrics["val/hmd/rmse_pixel"] = hmd_metrics.get('rmse_pixel', 0.0)
+                    additional_metrics["val/hmd/overall_score_pixel"] = hmd_metrics.get('overall_score_pixel', 0.0)
+                    # Also store with hmd/ prefix for backward compatibility
                     additional_metrics["hmd/detection_rate"] = hmd_metrics.get('detection_rate', 0.0)
                     additional_metrics["hmd/rmse_pixel"] = hmd_metrics.get('rmse_pixel', 0.0)
                     additional_metrics["hmd/overall_score_pixel"] = hmd_metrics.get('overall_score_pixel', 0.0)
@@ -606,6 +660,9 @@ def create_on_val_end_callback(args):
                 else:
                     # If validator not available, set to 0 (but still set them so they will be displayed)
                     logging.warning("⚠️ Validator not available for HMD metrics calculation")
+                    additional_metrics["val/hmd/detection_rate"] = 0.0
+                    additional_metrics["val/hmd/rmse_pixel"] = 0.0
+                    additional_metrics["val/hmd/overall_score_pixel"] = 0.0
                     additional_metrics["hmd/detection_rate"] = 0.0
                     additional_metrics["hmd/rmse_pixel"] = 0.0
                     additional_metrics["hmd/overall_score_pixel"] = 0.0
@@ -614,6 +671,9 @@ def create_on_val_end_callback(args):
                 logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
                 import traceback
                 logging.debug(traceback.format_exc())
+                additional_metrics["val/hmd/detection_rate"] = 0.0
+                additional_metrics["val/hmd/rmse_pixel"] = 0.0
+                additional_metrics["val/hmd/overall_score_pixel"] = 0.0
                 additional_metrics["hmd/detection_rate"] = 0.0
                 additional_metrics["hmd/rmse_pixel"] = 0.0
                 additional_metrics["hmd/overall_score_pixel"] = 0.0
@@ -733,8 +793,29 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
     """详细的评估函数，记录per-class指标"""
     logging.info(f"🔍 Evaluating on {split} split ...")
     
+    # Store validator reference for HMD calculation
+    validator_ref = [None]  # Use list to allow modification in nested function
+    
+    def capture_validator_callback(validator):
+        """Callback to capture validator object"""
+        validator_ref[0] = validator
+    
+    # Add callback to capture validator
+    # Note: add_callback is a method of YOLO class, not DetectionModel
+    if hasattr(model, 'add_callback'):
+        model.add_callback("on_val_end", capture_validator_callback)
+    
     # 进行验证
     metrics = model.val(split=split, batch=batch, imgsz=imgsz)
+    
+    # Remove callback after validation (if method exists)
+    # Note: remove_callback may not exist in all Ultralytics versions
+    if hasattr(model, 'remove_callback'):
+        try:
+            model.remove_callback("on_val_end", capture_validator_callback)
+        except (AttributeError, TypeError):
+            # If remove_callback doesn't work, it's okay - callback will be overwritten on next use
+            pass
     
     # 取得mean results
     try:
@@ -814,36 +895,58 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
         logs[f"{split}/dice"] = dice_value
     
     # Calculate HMD metrics if database is det_123 (for all det_123 experiments)
+    # Use the same calculate_hmd_metrics_from_validator function as in training
+    hmd_metrics = {
+        'detection_rate': 0.0,
+        'rmse_pixel': 0.0,
+        'overall_score_pixel': 0.0,
+    }
+    
     if database == 'det_123':
         try:
-            # Try to get validator from model to calculate HMD metrics
-            # The validator object contains stats needed for HMD calculation
-            hmd_metrics = {
-                'detection_rate': 0.0,
-                'rmse_hmd_pixel': 0.0,
-                'overall_score_pixel': 0.0,
-            }
+            # Create a minimal trainer-like object for calculate_hmd_metrics_from_validator
+            # The function needs trainer to access criterion, but we can pass model directly
+            class MinimalTrainerForEval:
+                def __init__(self, model):
+                    self.model = model
+                    self.validator = None
             
-            # Try to get validator from model's trainer
-            # model.val() creates a validator internally, but we need to access it
-            # For now, we'll use a simplified calculation based on available stats
-            # Full implementation would require access to validator object with predictions
-            if hasattr(metrics, 'box') and hasattr(metrics.box, 'mean_class_results'):
-                # We can estimate detection rate from per-class metrics
-                # This is a simplified approach - full HMD calculation requires bbox coordinates
-                per_class_metrics = metrics.box.mean_class_results
-                if per_class_metrics.shape[0] >= 2:  # At least 2 classes (Mentum and Hyoid)
-                    # Estimate detection rate as average recall of both classes
-                    mentum_recall = float(per_class_metrics[0, 1]) if per_class_metrics.shape[0] > 0 else 0.0
-                    hyoid_recall = float(per_class_metrics[1, 1]) if per_class_metrics.shape[0] > 1 else 0.0
-                    # Detection rate is approximated as minimum of both recalls
-                    hmd_metrics['detection_rate'] = min(mentum_recall, hyoid_recall)
+            minimal_trainer = MinimalTrainerForEval(model)
+            validator = validator_ref[0]
+            
+            if validator is not None:
+                minimal_trainer.validator = validator
+                # Calculate HMD metrics using the same function as in training
+                hmd_metrics = calculate_hmd_metrics_from_validator(
+                    validator=validator,
+                    trainer=minimal_trainer,
+                    penalty_single=penalty_single,
+                    penalty_none=penalty_none
+                )
+            else:
+                logging.warning("⚠️ Validator not captured, using fallback HMD calculation")
+                # Fallback: estimate from per-class metrics
+                if hasattr(metrics, 'box') and hasattr(metrics.box, 'mean_class_results'):
+                    per_class_metrics = metrics.box.mean_class_results
+                    if per_class_metrics.shape[0] >= 2:  # At least 2 classes (Mentum and Hyoid)
+                        mentum_recall = float(per_class_metrics[0, 1]) if per_class_metrics.shape[0] > 0 else 0.0
+                        hyoid_recall = float(per_class_metrics[1, 1]) if per_class_metrics.shape[0] > 1 else 0.0
+                        hmd_metrics['detection_rate'] = min(mentum_recall, hyoid_recall)
             
             logs.update({
                 f"{split}/hmd/detection_rate": hmd_metrics['detection_rate'],
-                f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_hmd_pixel'],
+                f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_pixel'],
                 f"{split}/hmd/overall_score_pixel": hmd_metrics['overall_score_pixel'],
             })
+            
+            # Print HMD metrics in the same format as training output
+            print(f"\n📊 Additional Metrics ({split}):", flush=True)
+            print(f"   Precision: {mp:.4f} | Recall: {mr:.4f}", flush=True)
+            print(f"   mAP50: {map50:.4f} | mAP50-95: {map:.4f} | Fitness: {fitness:.4f}", flush=True)
+            print(f"\n📏 HMD Metrics (det_123, {split}):", flush=True)
+            print(f"   Detection_Rate: {hmd_metrics['detection_rate']:.4f}", flush=True)
+            print(f"   RMSE_HMD (pixel): {hmd_metrics['rmse_pixel']:.2f} px", flush=True)
+            print(f"   Overall_Score (pixel): {hmd_metrics['overall_score_pixel']:.4f}", flush=True)
             
         except Exception as e:
             logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
@@ -852,12 +955,12 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
             # Set default values on error
             hmd_metrics = {
                 'detection_rate': 0.0,
-                'rmse_hmd_pixel': 0.0,
+                'rmse_pixel': 0.0,
                 'overall_score_pixel': 0.0,
             }
             logs.update({
                 f"{split}/hmd/detection_rate": hmd_metrics['detection_rate'],
-                f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_hmd_pixel'],
+                f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_pixel'],
                 f"{split}/hmd/overall_score_pixel": hmd_metrics['overall_score_pixel'],
             })
     
@@ -875,6 +978,15 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
         "per_class": per_class_metrics,
         "inference_speed": speed_data,
     }
+    
+    # Add HMD metrics to result for final summary
+    if database == 'det_123':
+        result.update({
+            "detection_rate": hmd_metrics['detection_rate'],
+            "rmse_hmd_pixel": hmd_metrics['rmse_pixel'],
+            "rmse_pixel": hmd_metrics['rmse_pixel'],  # Alias for consistency
+            "overall_score_pixel": hmd_metrics['overall_score_pixel'],
+        })
     
     if iou_value is not None:
         result["iou"] = iou_value
@@ -1348,6 +1460,8 @@ if __name__=='__main__':
         if val_results:
             map50_val = val_results.get("mAP50", 0)
             map_val = val_results.get("mAP50-95", 0)
+            precision_val = val_results.get("precision", 0)
+            recall_val = val_results.get("recall", 0)
             fitness_val = val_results.get("fitness", map50_val * 0.1 + map_val * 0.9)
             iou_val = val_results.get("iou", None)
             dice_val = val_results.get("dice", None)
@@ -1356,6 +1470,8 @@ if __name__=='__main__':
                 "fitness/val": fitness_val,
                 "val/mAP50": map50_val,
                 "val/mAP50-95": map_val,
+                "val/precision": precision_val,
+                "val/recall": recall_val,
             }
             if iou_val is not None:
                 val_summary["val/iou"] = iou_val
@@ -1366,18 +1482,20 @@ if __name__=='__main__':
             if args.database == 'det_123':
                 val_summary.update({
                     "val/hmd/detection_rate": val_results.get("detection_rate", 0),
-                    "val/hmd/rmse_pixel": val_results.get("rmse_hmd_pixel", 0),
+                    "val/hmd/rmse_pixel": val_results.get("rmse_pixel", 0),  # Use rmse_pixel (not rmse_hmd_pixel)
                     "val/hmd/overall_score_pixel": val_results.get("overall_score_pixel", 0),
                 })
             
             wandb.log(val_summary)
             wandb.run.summary.update({k: v for k, v in val_summary.items() if not k.startswith("fitness/")})
             wandb.run.summary["fitness_val"] = fitness_val
-            logging.info(f"✅ Val metrics: mAP50={map50_val:.4f}, mAP50-95={map_val:.4f}, Fitness={fitness_val:.6f}")
+            logging.info(f"✅ Val metrics: Precision={precision_val:.4f}, Recall={recall_val:.4f}, mAP50={map50_val:.4f}, mAP50-95={map_val:.4f}, Fitness={fitness_val:.6f}")
         
         if test_results:
             map50_test = test_results.get("mAP50", 0)
             map_test = test_results.get("mAP50-95", 0)
+            precision_test = test_results.get("precision", 0)
+            recall_test = test_results.get("recall", 0)
             fitness_test = test_results.get("fitness", map50_test * 0.1 + map_test * 0.9)
             iou_test = test_results.get("iou", None)
             dice_test = test_results.get("dice", None)
@@ -1386,6 +1504,8 @@ if __name__=='__main__':
                 "fitness/test": fitness_test,
                 "test/mAP50": map50_test,
                 "test/mAP50-95": map_test,
+                "test/precision": precision_test,
+                "test/recall": recall_test,
             }
             if iou_test is not None:
                 test_summary["test/iou"] = iou_test
@@ -1396,14 +1516,14 @@ if __name__=='__main__':
             if args.database == 'det_123':
                 test_summary.update({
                     "test/hmd/detection_rate": test_results.get("detection_rate", 0),
-                    "test/hmd/rmse_pixel": test_results.get("rmse_hmd_pixel", 0),
+                    "test/hmd/rmse_pixel": test_results.get("rmse_pixel", 0),  # Use rmse_pixel (not rmse_hmd_pixel)
                     "test/hmd/overall_score_pixel": test_results.get("overall_score_pixel", 0),
                 })
             
             wandb.log(test_summary)
             wandb.run.summary.update({k: v for k, v in test_summary.items() if not k.startswith("fitness/")})
             wandb.run.summary["fitness_test"] = fitness_test
-            logging.info(f"✅ Test metrics: mAP50={map50_test:.4f}, mAP50-95={map_test:.4f}, Fitness={fitness_test:.6f}")
+            logging.info(f"✅ Test metrics: Precision={precision_test:.4f}, Recall={recall_test:.4f}, mAP50={map50_test:.4f}, mAP50-95={map_test:.4f}, Fitness={fitness_test:.6f}")
         
         # 导出ONNX模型并上传到W&B
         try:

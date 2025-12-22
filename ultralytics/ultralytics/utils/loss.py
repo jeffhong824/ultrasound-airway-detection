@@ -476,7 +476,9 @@ class v8DetectionLoss:
         loss[2] *= self.hyp.dfl  # dfl gain
 
         # HMD loss calculation (if enabled)
-        if self.use_hmd_loss and fg_mask.sum() > 0:
+        # Always calculate HMD loss if enabled, even if fg_mask.sum() == 0
+        # The _calculate_hmd_loss function will handle the penalty for no detections
+        if self.use_hmd_loss:
             hmd_loss_value = self._calculate_hmd_loss(
                 pred_bboxes, pred_scores, target_bboxes, gt_labels, fg_mask, stride_tensor
             )
