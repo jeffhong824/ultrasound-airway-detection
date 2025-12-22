@@ -34,60 +34,167 @@ pip install -e .
 - RTX 4070 (batch=16): `ultrasound-det_123_ES-v3-4070`
 - H200 (batch=256): `ultrasound-det_123_ES-v3-h200`
 
-每個 project 包含以下實驗：
-- **實驗 0 (exp0)**: 基準實驗，不使用 HMD Loss
-- **實驗 1 (exp1)**: 使用 HMD Loss 進行訓練
+**實驗規劃 / Experiment Plan**:
 
-所有實驗均使用 `--seed 42` 確保可重現性。
+每個 project 包含以下 6 個實驗，所有實驗均使用 `--seed 42` 確保可重現性：
+
+- **exp0 baseline**: 基準實驗，使用所有默認參數，作為對照組
+- **exp1 data_aug**: 相對於 exp0，優化 Data Augmentation 參數（針對小物件）
+- **exp2 loss_weights**: 相對於 exp0，調整 Loss 權重參數（定位優先）
+- **exp3 focal_loss**: 相對於 exp0，啟用 Focal Loss（處理類別不平衡）
+- **exp4 dim_weights**: 相對於 exp0，啟用水平方向維度權重（HMD 優化）
+- **exp5 hmd_loss**: 相對於 exp0，啟用 HMD Loss（HMD 距離優化）
+
+##### exp0 baseline 默認參數說明
+
+**Loss 權重**（默認值）：
+- `--box`: 7.5
+- `--cls`: 0.5
+- `--dfl`: 1.5
+
+**Data Augmentation**（默認值）：
+- `--scale`: 0.5
+- `--translate`: 0.1
+- `--hsv_h`: 0.0
+- `--hsv_s`: 0.7
+- `--hsv_v`: 0.4
+
+**其他參數**（默認值）：
+- `--use_focal_loss`: False（未啟用）
+- `--use_dim_weights`: False（未啟用）
+- `--use_hmd_loss`: False（未啟用）
 
 #### RTX 4070 配置 (Single GPU / 單 GPU)
 
-**實驗 0: 基準訓練 (Baseline Training / 不使用 HMD Loss)**:
+**exp0 baseline: 基準實驗（所有默認參數）**
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=16 \
-  --epochs=15 \
+  --epochs=10 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-4070" \
-  --exp_name="exp0"
+  --exp_name="exp0 baseline"
 ```
 
-**實驗 1: 使用 HMD Loss (With HMD Loss)**:
+**exp1 data_aug: Data Augmentation 優化（針對小物件）**
 
-**Simplified / 簡化版** (using default values / 使用預設值):
+相對於 exp0 的改動：
+- `--scale`: 0.5 → **0.7**（增加尺寸多樣性，讓小目標在縮放後仍可被模型辨識）
+- `--translate`: 0.1 → **0.15**（增加位置變異，提升模型在不同掃描位置的穩定性）
+- `--hsv_s`: 0.7 → **0.8**（強化亮度變化，使小病灶在高噪音背景中更突出）
+- `--hsv_v`: 0.4 → **0.5**（強化對比變化）
+- `--hsv_h`: 0.0（保持不變，超音波為黑白影像，不需色調遷移）
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=16 \
-  --epochs=15 \
+  --epochs=10 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-4070" \
-  --exp_name="exp1" \
-  --use_hmd_loss
+  --exp_name="exp1 data_aug" \
+  --scale 0.7 \
+  --translate 0.15 \
+  --hsv_s 0.8 \
+  --hsv_v 0.5 \
+  --hsv_h 0.0
 ```
 
-**Full Command / 完整命令** (with all parameters / 包含所有參數):
+**exp2 loss_weights: Loss 權重調整（定位優先）**
+
+相對於 exp0 的改動：
+- `--box`: 7.5 → **8.5**（+13%，更強調定位誤差，適合小範圍、細長結構）
+- `--dfl`: 1.5 → **2.0**（+33%，直接提高邊界框細緻回歸精度，改善線段邊緣定位）
+- `--cls`: 0.5 → **0.6**（+20%，提高分類損失權重）
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=16 \
-  --epochs=15 \
+  --epochs=10 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-4070" \
-  --exp_name="exp1" \
+  --exp_name="exp2 loss_weights" \
+  --box 8.5 \
+  --dfl 2.0 \
+  --cls 0.6
+```
+
+**exp3 focal_loss: Focal Loss（處理類別不平衡）**
+
+相對於 exp0 的改動：
+- `--use_focal_loss`: False → **True**（啟用 Focal Loss）
+- `--focal_gamma`: **1.5**（減少 easy-negative 的干擾）
+- `--focal_alpha`: **0.25**（提高稀少正樣本（超音波病灶）的學習權重）
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4070" \
+  --exp_name="exp3 focal_loss" \
+  --use_focal_loss \
+  --focal_gamma 1.5 \
+  --focal_alpha 0.25
+```
+
+**exp4 dim_weights: 水平方向維度權重（HMD 優化）**
+
+相對於 exp0 的改動：
+- `--use_dim_weights`: False → **True**（啟用維度權重）
+- `--dim_weights`: [1.0, 1.0, 1.0, 1.0] → **[5.0, 1.0, 5.0, 1.0]**（加強水平定位（Δx）的敏感度，適用目標呈現「水平細長」特性）
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4070" \
+  --exp_name="exp4 dim_weights" \
+  --use_dim_weights \
+  --dim_weights 5.0 1.0 5.0 1.0
+```
+
+**exp5 hmd_loss: HMD Loss（HMD 距離優化）**
+
+相對於 exp0 的改動：
+- `--use_hmd_loss`: False → **True**（啟用 HMD Loss）
+- `--hmd_loss_weight`: **0.1**（HMD loss 的權重係數）
+- `--hmd_penalty_single`: **500.0**（只檢測到一個目標時的懲罰值，像素）
+- `--hmd_penalty_none`: **1000.0**（兩個目標都漏檢時的懲罰值，像素）
+- `--hmd_penalty_coeff`: **0.5**（單個檢測時的權重係數）
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4070" \
+  --exp_name="exp5 hmd_loss" \
   --use_hmd_loss \
   --hmd_loss_weight 0.1 \
   --hmd_penalty_single 500.0 \
@@ -97,52 +204,107 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 
 #### H200 配置 (Multi-GPU / 多 GPU)
 
-**實驗 0: 基準訓練 (Baseline Training / 不使用 HMD Loss)**:
+**exp0 baseline: 基準實驗（所有默認參數）**
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=256 \
-  --epochs=15 \
+  --epochs=10 \
   --device 0,1 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-h200" \
-  --exp_name="exp0"
+  --exp_name="exp0 baseline"
 ```
 
-**實驗 1: 使用 HMD Loss (With HMD Loss)**:
-
-**Simplified / 簡化版** (using default values / 使用預設值):
+**exp1 data_aug: Data Augmentation 優化（針對小物件）**
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=256 \
-  --epochs=15 \
+  --epochs=10 \
   --device 0,1 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-h200" \
-  --exp_name="exp1" \
-  --use_hmd_loss
+  --exp_name="exp1 data_aug" \
+  --scale 0.7 \
+  --translate 0.15 \
+  --hsv_s 0.8 \
+  --hsv_v 0.5 \
+  --hsv_h 0.0
 ```
 
-**Full Command / 完整命令** (with all parameters / 包含所有參數):
+**exp2 loss_weights: Loss 權重調整（定位優先）**
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
   --batch=256 \
-  --epochs=15 \
+  --epochs=10 \
   --device 0,1 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-h200" \
-  --exp_name="exp1" \
+  --exp_name="exp2 loss_weights" \
+  --box 8.5 \
+  --dfl 2.0 \
+  --cls 0.6
+```
+
+**exp3 focal_loss: Focal Loss（處理類別不平衡）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp3 focal_loss" \
+  --use_focal_loss \
+  --focal_gamma 1.5 \
+  --focal_alpha 0.25
+```
+
+**exp4 dim_weights: 水平方向維度權重（HMD 優化）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp4 dim_weights" \
+  --use_dim_weights \
+  --dim_weights 5.0 1.0 5.0 1.0
+```
+
+**exp5 hmd_loss: HMD Loss（HMD 距離優化）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp5 hmd_loss" \
   --use_hmd_loss \
   --hmd_loss_weight 0.1 \
   --hmd_penalty_single 500.0 \
@@ -177,7 +339,78 @@ def calculate_hmd(mentum_box, hyoid_box):
     return hmd
 ```
 
-#### 2. HMD Loss 設計原理
+#### 2. 維度權重 (Dimension Weights) 原理與應用
+
+##### 2.1 維度權重的基本概念
+
+`--dim_weights` 參數允許對 bounding box 的四個邊界（左、上、右、下）應用不同的損失權重，從而控制模型對不同方向定位精度的重視程度。
+
+**參數格式**：
+```bash
+--use_dim_weights --dim_weights <left> <top> <right> <bottom>
+```
+
+**工作原理**：
+- 在 DFL (Distribution Focal Loss) 計算中，對每個維度的損失應用對應的權重
+- 權重越大，該維度的定位誤差在總損失中的貢獻越大
+- 模型會更重視高權重維度的定位精度
+
+**程式碼實作**（`ultralytics/utils/loss.py` 第 184-206 行）：
+```python
+if self.use_dim_weights:
+    # 分別計算每個維度 [l, t, r, b] 的 DFL loss
+    loss_dfl_per_dim = []
+    for dim_idx in range(4):  # [l, t, r, b]
+        dim_loss = self.dfl_loss(...)  # 計算該維度的損失
+        dim_loss = dim_loss * self.dim_weights[dim_idx]  # 應用權重
+        loss_dfl_per_dim.append(dim_loss)
+    # 合併所有維度的損失
+    loss_dfl = torch.cat(loss_dfl_per_dim, dim=1)
+```
+
+##### 2.2 對 det_123 資料庫的 HMD 計算應用
+
+**HMD 計算的關鍵依賴**：
+
+從 HMD 計算公式可以看出：
+1. **水平方向（X）**：`hmd_dx = hyoid_x1 - mentum_x2`
+   - 直接依賴於 **Mentum 的右邊界（right）** 和 **Hyoid 的左邊界（left）**
+   - 這兩個邊界的定位精度直接影響 HMD 的準確性
+   
+2. **垂直方向（Y）**：`hmd_dy = hyoid_y_center - mentum_y_center`
+   - 依賴於兩個 box 的中心點 Y 座標
+   - 中心點 = (top + bottom) / 2，因此上下邊界（top, bottom）的精度也會影響 HMD
+
+**推薦的權重設定**：
+
+對於 `det_123` 資料庫的 HMD 計算，建議使用以下設定：
+
+```bash
+--use_dim_weights --dim_weights 5.0 1.0 5.0 1.0
+```
+
+**權重解釋**：
+- **Left (5.0)**：Hyoid 的左邊界（`hyoid_x1`）權重高，因為直接用於計算 `hmd_dx`
+- **Top (1.0)**：上邊界權重較低，因為只間接影響中心點計算
+- **Right (5.0)**：Mentum 的右邊界（`mentum_x2`）權重高，因為直接用於計算 `hmd_dx`
+- **Bottom (1.0)**：下邊界權重較低，因為只間接影響中心點計算
+
+**為什麼這樣設定？**
+
+1. **水平方向優先**：HMD 的水平分量（`hmd_dx`）直接依賴於左右邊界，因此需要更高的定位精度
+2. **垂直方向次要**：HMD 的垂直分量（`hmd_dy`）使用中心點，對上下邊界的精度要求相對較低
+3. **權重比例**：5:1 的比例可以讓模型在訓練時更重視水平方向的定位，同時不忽略垂直方向
+
+**其他可能的設定**：
+
+如果垂直方向的定位也很重要，可以考慮：
+```bash
+--use_dim_weights --dim_weights 5.0 2.0 5.0 2.0
+```
+
+這樣可以同時提高水平和垂直方向的定位精度，但可能會降低模型對水平方向的專注度。
+
+#### 3. HMD Loss 設計原理
 
 HMD Loss 是一個輔助損失函數，旨在優化模型對 HMD 距離的預測準確性。它與標準檢測損失（box loss, cls loss, dfl loss）結合使用：
 
@@ -190,7 +423,7 @@ HMD Loss 是一個輔助損失函數，旨在優化模型對 HMD 距離的預測
 - `λ_hmd` = `--hmd_loss_weight`（預設 0.1）
 - `HMD_loss` = 加權平均的 HMD 誤差
 
-#### 3. HMD Loss 計算邏輯
+#### 4. HMD Loss 計算邏輯
 
 HMD Loss 針對每張影像的三種情況進行處理：
 
@@ -277,7 +510,7 @@ else:
     weight = torch.tensor(1.0, device=device)
 ```
 
-#### 4. 批次級別的 HMD Loss 計算
+#### 5. 批次級別的 HMD Loss 計算
 
 對於一個 batch 中的多張影像，HMD Loss 計算加權平均：
 
@@ -300,7 +533,7 @@ weights_tensor = torch.stack(weights)
 hmd_loss = (hmd_errors_tensor * weights_tensor).sum() / (weights_tensor.sum() + 1e-8)
 ```
 
-#### 5. 整合到總損失函數
+#### 6. 整合到總損失函數
 
 HMD Loss 被加權後添加到 box loss 中：
 
@@ -317,9 +550,9 @@ if self.use_hmd_loss and fg_mask.sum() > 0:
     loss[0] = loss[0] + self.hmd_loss_weight * hmd_loss_value
 ```
 
-#### 6. HMD Loss 計算原理與實現
+#### 7. HMD Loss 計算原理與實現
 
-##### 6.1 核心計算邏輯
+##### 7.1 核心計算邏輯
 
 HMD Loss 的核心是計算**預測 HMD 與 Ground Truth HMD 的絕對差值**，並將其作為損失函數的一部分：
 
@@ -350,7 +583,7 @@ if has_mentum_pred and has_hyoid_pred and has_mentum_target and has_hyoid_target
 - **置信度加權**：使用兩個目標的置信度乘積作為權重，高置信度預測對損失貢獻更大
 - **像素級計算**：HMD 距離以像素為單位計算，不依賴 DICOM PixelSpacing（訓練階段）
 
-##### 6.2 v8DetectionLoss 類實現位置
+##### 7.2 v8DetectionLoss 類實現位置
 
 HMD Loss 的實現位於 `ultralytics/ultralytics/utils/loss.py` 中的 `v8DetectionLoss` 類：
 
@@ -432,7 +665,7 @@ def _calculate_hmd_from_boxes(self, mentum_box: torch.Tensor, hyoid_box: torch.T
     # ...
 ```
 
-##### 6.3 與 hmd_utils.py 的整合
+##### 7.3 與 hmd_utils.py 的整合
 
 `v8DetectionLoss` 類會優先使用 `ultralytics/mycodes/hmd_utils.py` 中的函數（如果可用）：
 
@@ -453,11 +686,11 @@ except ImportError:
 - **易於維護**：HMD 計算邏輯集中在 `hmd_utils.py` 中
 - **向後兼容**：如果 `hmd_utils.py` 不可用，會回退到本地實現
 
-#### 7. 訓練監控指標
+#### 8. 訓練監控指標
 
 在訓練過程中，系統會在**每個 validation epoch 結束後**顯示以下 HMD 相關指標：
 
-##### 7.1 指標列表與解釋
+##### 8.1 指標列表與解釋
 
 **1. HMD_loss（HMD 損失值）**
 - **定義**：每個 epoch 的平均 HMD loss（跨所有 batch 的平均值）
@@ -505,7 +738,7 @@ except ImportError:
 - **顯示位置**：終端輸出中的 `📏 HMD Metrics (det_123)` 區塊
 - **程式碼位置**：`ultralytics/mycodes/train_yolo.py` 第 98 行
 
-##### 7.2 指標計算流程
+##### 8.2 指標計算流程
 
 **訓練階段（每個 batch）**：
 1. 在 `v8DetectionLoss.__call__` 中計算 HMD loss
@@ -539,7 +772,7 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 # 返回：detection_rate, rmse_pixel, overall_score_pixel
 ```
 
-##### 7.3 終端輸出範例
+##### 8.3 終端輸出範例
 
 訓練時，每個 validation epoch 結束後會看到類似輸出：
 
@@ -561,7 +794,7 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 - `RMSE_HMD (pixel): 45.67 px` 表示 HMD 預測的均方根誤差為 45.67 像素
 - `Overall_Score (pixel): 38.82` 表示綜合評分為 38.82（0.85 × 45.67 ≈ 38.82）
 
-#### 8. 類別映射
+#### 9. 類別映射
 
 HMD Loss 僅適用於 `det_123` 資料庫，類別映射如下：
 
@@ -577,7 +810,7 @@ use_hmd_loss_flag = args.use_hmd_loss and args.database == 'det_123'
 
 只有當 `--use_hmd_loss` 被指定且 `database == 'det_123'` 時，HMD Loss 才會被啟用。
 
-#### 9. 資料集 HMD 分布分析
+#### 10. 資料集 HMD 分布分析
 
 根據對 `det_123` 資料集的實際分析，所有 Ground Truth 標註都包含完整的 Mentum 和 Hyoid 兩個目標：
 
@@ -882,7 +1115,7 @@ cp ultralytics/.env.example ultralytics/.env
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --db_version=3 \
   --es \
-  --epochs=15 \
+  --epochs=10 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-4070" \
