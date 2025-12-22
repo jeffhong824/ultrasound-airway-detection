@@ -705,7 +705,7 @@ except ImportError:
 📏 HMD Metrics (det_123):
    Detection_Rate: 0.8500
    RMSE_HMD (pixel): 45.67 px
-   Overall_Score (pixel): 38.82
+   Overall_Score (pixel): 0.82
 ```
 
 **重要說明**：
@@ -753,15 +753,22 @@ except ImportError:
 
 **4. Overall_Score (pixel)（綜合評分）**
 - **定義**：綜合評分，結合檢測率和 HMD 誤差
-- **計算公式**：`Overall_Score = Detection_Rate × RMSE_HMD`
-- **單位**：像素（pixels）
+- **計算公式**：`Overall_Score = Detection_Rate / (1 + RMSE_HMD / 1000)`
+  - 使用 1000 作為歸一化因子（典型 RMSE 範圍：100-1000 像素）
+  - 當 RMSE_HMD = 0 時，Overall_Score = Detection_Rate（完美情況）
+- **單位**：無單位（0-1 之間的分數）
 - **意義**：
   - 同時考慮檢測完整性和預測準確性
-  - 值越小表示整體性能越好
-  - 當 Detection_Rate 接近 1.0 時，Overall_Score 主要反映 RMSE_HMD
-  - 當 Detection_Rate 較低時，Overall_Score 會相應降低，反映漏檢的影響
+  - **值越大表示整體性能越好**（與 Detection_Rate 和 RMSE_HMD 的改進方向一致）
+  - 當 Detection_Rate 高且 RMSE_HMD 低時，Overall_Score 會接近 1.0
+  - 當 Detection_Rate 低或 RMSE_HMD 高時，Overall_Score 會相應降低
+- **範例**：
+  - Detection_Rate = 1.0, RMSE_HMD = 0 → Overall_Score = 1.0（最佳）
+  - Detection_Rate = 1.0, RMSE_HMD = 1000 → Overall_Score = 0.5
+  - Detection_Rate = 0.5, RMSE_HMD = 0 → Overall_Score = 0.5
+  - Detection_Rate = 0.5, RMSE_HMD = 1000 → Overall_Score = 0.25
 - **顯示位置**：終端輸出中的 `📏 HMD Metrics (det_123)` 區塊
-- **程式碼位置**：`ultralytics/mycodes/train_yolo.py` 第 98 行
+- **程式碼位置**：`ultralytics/mycodes/train_yolo.py` 第 396、495 行
 
 ##### 8.2 指標計算流程
 
@@ -776,7 +783,7 @@ except ImportError:
 3. **計算 HMD 指標**：
    - 如果啟用 HMD Loss：從 `criterion.get_avg_hmd_loss()` 獲取平均 HMD loss，並從 validator stats 計算 Detection_Rate
    - 如果未啟用 HMD Loss：僅從 validator stats 計算 Detection_Rate 和 RMSE_HMD（基於預測與 Ground Truth 的匹配情況）
-4. **計算綜合指標**：計算 Overall_Score = Detection_Rate × RMSE_HMD
+4. **計算綜合指標**：計算 Overall_Score = Detection_Rate / (1 + RMSE_HMD / 1000)
 5. **顯示指標**：調用 `print_validation_metrics` 在終端顯示所有指標（包括 HMD 指標）
 
 **顯示時間點**：
@@ -897,14 +904,15 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 📏 HMD Metrics (det_123):
    Detection_Rate: 0.8500
    RMSE_HMD (pixel): 45.67 px
-   Overall_Score (pixel): 38.82
+   Overall_Score (pixel): 0.82
 ```
 
 **說明**：
 - `HMD_loss: 123.4567` 表示該 epoch 的平均 HMD 損失為 123.46 像素
 - `Detection_Rate: 0.8500` 表示 85% 的影像同時檢測到兩個目標
 - `RMSE_HMD (pixel): 45.67 px` 表示 HMD 預測的均方根誤差為 45.67 像素
-- `Overall_Score (pixel): 38.82` 表示綜合評分為 38.82（0.85 × 45.67 ≈ 38.82）
+- `Overall_Score (pixel): 0.78` 表示綜合評分為 0.78（0.85 / (1 + 45.67 / 1000) ≈ 0.78）
+  - 注意：Overall_Score 現在是 0-1 之間的分數，值越大越好
 
 #### 9. 類別映射
 

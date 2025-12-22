@@ -393,7 +393,14 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                                             detection_rate = 0.0
                                         # Use average HMD loss as RMSE (it's already the average HMD error)
                                         rmse_pixel = float(avg_hmd_loss)
-                                        overall_score_pixel = detection_rate * rmse_pixel if rmse_pixel > 0 else 1.0
+                                        # Overall_Score should be higher when Detection_Rate is high AND RMSE_HMD is low
+                                        # Formula: Overall_Score = Detection_Rate / (1 + RMSE_HMD / normalization_factor)
+                                        # Using 1000 as normalization factor (typical RMSE range: 100-1000 pixels)
+                                        # This ensures: higher Detection_Rate and lower RMSE_HMD → higher Overall_Score
+                                        if rmse_pixel > 0:
+                                            overall_score_pixel = detection_rate / (1 + rmse_pixel / 1000.0)
+                                        else:
+                                            overall_score_pixel = detection_rate  # Perfect RMSE (0) → score equals detection rate
                                         
                                         return {
                                             'detection_rate': float(detection_rate),
@@ -492,7 +499,14 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
             else:
                 rmse_pixel = penalty_none
             
-            overall_score_pixel = detection_rate * rmse_pixel if rmse_pixel > 0 else 1.0
+            # Overall_Score should be higher when Detection_Rate is high AND RMSE_HMD is low
+            # Formula: Overall_Score = Detection_Rate / (1 + RMSE_HMD / normalization_factor)
+            # Using 1000 as normalization factor (typical RMSE range: 100-1000 pixels)
+            # This ensures: higher Detection_Rate and lower RMSE_HMD → higher Overall_Score
+            if rmse_pixel > 0:
+                overall_score_pixel = detection_rate / (1 + rmse_pixel / 1000.0)
+            else:
+                overall_score_pixel = detection_rate  # Perfect RMSE (0) → score equals detection rate
             
             return {
                 'detection_rate': float(detection_rate),
