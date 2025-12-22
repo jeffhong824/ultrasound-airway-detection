@@ -25,9 +25,18 @@ pip install -e .
 
 ### Train / 訓練
 
+#### 實驗設計 / Experiment Design
+
+本專案使用 `ultrasound-det_123_ES-v3` 作為實驗專案名稱，包含以下實驗：
+
+- **實驗 0 (exp0)**: 基準實驗，不使用 HMD Loss
+- **實驗 1 (exp1)**: 使用 HMD Loss 進行訓練
+
+所有實驗均使用 `--seed 42` 確保可重現性。
+
 #### RTX 4070 配置 (Single GPU / 單 GPU)
 
-**Basic Training / 基本訓練**:
+**實驗 0: 基準訓練 (Baseline Training / 不使用 HMD Loss)**:
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
@@ -38,11 +47,11 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-small-obj" \
-  --exp_name="exp10-small-obj-optimized"
+  --project="ultrasound-det_123_ES-v3" \
+  --exp_name="exp0"
 ```
 
-**With HMD Loss / 啟用 HMD Loss** (for `det_123` database only / 僅適用於 `det_123` 資料庫):
+**實驗 1: 使用 HMD Loss (With HMD Loss)**:
 
 **Simplified / 簡化版** (using default values / 使用預設值):
 
@@ -55,8 +64,8 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-small-obj" \
-  --exp_name="exp100-hmd_loss" \
+  --project="ultrasound-det_123_ES-v3" \
+  --exp_name="exp1" \
   --use_hmd_loss
 ```
 
@@ -71,8 +80,8 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-small-obj" \
-  --exp_name="exp100-hmd_loss" \
+  --project="ultrasound-det_123_ES-v3" \
+  --exp_name="exp1" \
   --use_hmd_loss \
   --hmd_loss_weight 0.1 \
   --hmd_penalty_single 500.0 \
@@ -82,7 +91,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 
 #### H200 配置 (Multi-GPU / 多 GPU)
 
-**Basic Training / 基本訓練**:
+**實驗 0: 基準訓練 (Baseline Training / 不使用 HMD Loss)**:
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
@@ -93,11 +102,11 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device 0,1 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-small-obj" \
-  --exp_name="exp10-small-obj-optimized"
+  --project="ultrasound-det_123_ES-v3" \
+  --exp_name="exp0"
 ```
 
-**With HMD Loss / 啟用 HMD Loss** (for `det_123` database only / 僅適用於 `det_123` 資料庫):
+**實驗 1: 使用 HMD Loss (With HMD Loss)**:
 
 **Simplified / 簡化版** (using default values / 使用預設值):
 
@@ -110,8 +119,8 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device 0,1 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-small-obj" \
-  --exp_name="exp100-hmd_loss" \
+  --project="ultrasound-det_123_ES-v3" \
+  --exp_name="exp1" \
   --use_hmd_loss
 ```
 
@@ -126,8 +135,8 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device 0,1 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-small-obj" \
-  --exp_name="exp100-hmd_loss" \
+  --project="ultrasound-det_123_ES-v3" \
+  --exp_name="exp1" \
   --use_hmd_loss \
   --hmd_loss_weight 0.1 \
   --hmd_penalty_single 500.0 \
@@ -656,7 +665,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 ```bash
 # For production training / 正式訓練
 python ultralytics/mycodes/best_epoch.py detect 1 \
-  --run_name="yolo11n-det_123-v3-exp10-small-obj-optimized"
+  --run_name="ultrasound-det_123_ES-v3/exp0"
 
 # For test training / 測試訓練
 python ultralytics/mycodes/best_epoch.py detect 1 \
@@ -870,8 +879,8 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --epochs=15 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-small-obj" \
-  --exp_name="exp10-small-obj-optimized"
+  --project="ultrasound-det_123_ES-v3" \
+  --exp_name="exp0"
 ```
 
 #### Step 2: Test Model on Test Set / 在測試集上測試模型
@@ -879,13 +888,13 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 ```bash
 python ultralytics/mycodes/test_yolo.py detect "" det_123 \
   --db_version 3 \
-  --weights ultralytics/runs/train/yolo11n-det_123-v1-exp18-ext10-lr-strategy/weights/best.pt \
+  --weights ultralytics/runs/train/ultrasound-det_123_ES-v3/exp0/weights/best.pt \
   --dev cuda:0 \
   --batch_size 4 \
-  --output-name test_exp1
+  --output-name test_exp0
 ```
 
-**Output / 輸出**: `ultralytics/runs/detect/test_exp1/predictions.joblib`
+**Output / 輸出**: `ultralytics/runs/detect/test_exp0/predictions.joblib`
 
 **Note / 注意**: 
 - Use `--output-name` to specify custom output folder name (e.g., `test_exp1` instead of `test2`)
@@ -902,7 +911,7 @@ python ultralytics/mycodes/test_yolo.py detect "" det_123 \
 python evaluate/calculate_hmd_from_yolo.py \
     --case-id det_123 \
     --patient-id 0587648 \
-    --pred-joblib ultralytics/runs/detect/test_exp1/predictions.joblib \
+    --pred-joblib ultralytics/runs/detect/test_exp0/predictions.joblib \
     --compare-gt \
     --version v3 \
     --output hmd_comparison_0587648.csv
@@ -923,7 +932,7 @@ python evaluate/calculate_hmd_from_yolo.py \
     --case-id det_123 \
     --batch \
     --test-only \
-    --pred-joblib ultralytics/runs/detect/test_exp1/predictions.joblib \
+    --pred-joblib ultralytics/runs/detect/test_exp0/predictions.joblib \
     --compare-gt \
     --version v3 \
     --output hmd_comparison_all.csv
