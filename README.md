@@ -4,6 +4,8 @@ Object detection and segmentation for difficult airway ultrasound imaging in cli
 
 用於臨床困難呼吸道超音波影像的物件偵測與分割。
 
+**Current Version**: v0.1.1
+
 ---
 
 ## 🚀 Quick Start / 快速開始
@@ -31,7 +33,7 @@ pip install -e .
 為了確保實驗結果的可比較性，不同硬件配置（RTX 4070 和 H200）使用**不同的 project 名稱**，避免因 batch size 差異導致的訓練動態不同影響比較。
 
 **Project 命名規則 / Project Naming Convention**:
-- RTX 4070 (batch=16): `ultrasound-det_123_ES-v3-4070`
+- RTX 4070 (batch=16): `ultrasound-det_123_ES-v3-4090`
 - H200 (batch=256): `ultrasound-det_123_ES-v3-h200`
 
 **實驗規劃 / Experiment Plan**:
@@ -77,7 +79,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-4070" \
+  --project="ultrasound-det_123_ES-v3-4090" \
   --exp_name="exp0 baseline"
 ```
 
@@ -99,7 +101,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-4070" \
+  --project="ultrasound-det_123_ES-v3-4090" \
   --exp_name="exp1 data_aug" \
   --scale 0.7 \
   --translate 0.15 \
@@ -124,7 +126,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-4070" \
+  --project="ultrasound-det_123_ES-v3-4090" \
   --exp_name="exp2 loss_weights" \
   --box 8.5 \
   --dfl 2.0 \
@@ -147,7 +149,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-4070" \
+  --project="ultrasound-det_123_ES-v3-4090" \
   --exp_name="exp3 focal_loss" \
   --use_focal_loss \
   --focal_gamma 1.5 \
@@ -169,7 +171,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-4070" \
+  --project="ultrasound-det_123_ES-v3-4090" \
   --exp_name="exp4 dim_weights" \
   --use_dim_weights \
   --dim_weights 5.0 1.0 5.0 1.0
@@ -179,7 +181,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 
 相對於 exp0 的改動：
 - `--use_hmd_loss`: False → **True**（啟用 HMD Loss）
-- `--hmd_loss_weight`: **0.1**（HMD loss 的權重係數）
+- `--hmd_loss_weight`: **0.5**（HMD loss 的權重係數）
 - `--hmd_penalty_single`: **500.0**（只檢測到一個目標時的懲罰值，像素）
 - `--hmd_penalty_none`: **1000.0**（兩個目標都漏檢時的懲罰值，像素）
 - `--hmd_penalty_coeff`: **0.5**（單個檢測時的權重係數）
@@ -193,10 +195,10 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --device cuda:0 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-4070" \
+  --project="ultrasound-det_123_ES-v3-4090" \
   --exp_name="exp5 hmd_loss" \
   --use_hmd_loss \
-  --hmd_loss_weight 0.1 \
+  --hmd_loss_weight 0.5 \
   --hmd_penalty_single 500.0 \
   --hmd_penalty_none 1000.0 \
   --hmd_penalty_coeff 0.5
@@ -306,7 +308,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --project="ultrasound-det_123_ES-v3-h200" \
   --exp_name="exp5 hmd_loss" \
   --use_hmd_loss \
-  --hmd_loss_weight 0.1 \
+  --hmd_loss_weight 0.5 \
   --hmd_penalty_single 500.0 \
   --hmd_penalty_none 1000.0 \
   --hmd_penalty_coeff 0.5
@@ -420,7 +422,7 @@ HMD Loss 是一個輔助損失函數，旨在優化模型對 HMD 距離的預測
 
 其中：
 - `標準檢測損失` = box_loss + cls_loss + dfl_loss
-- `λ_hmd` = `--hmd_loss_weight`（預設 0.1）
+- `λ_hmd` = `--hmd_loss_weight`（預設 0.5）
 - `HMD_loss` = 加權平均的 HMD 誤差
 
 #### 4. HMD Loss 計算邏輯
@@ -685,6 +687,366 @@ except ImportError:
 - **代碼復用**：避免重複實現相同的 HMD 計算邏輯
 - **易於維護**：HMD 計算邏輯集中在 `hmd_utils.py` 中
 - **向後兼容**：如果 `hmd_utils.py` 不可用，會回退到本地實現
+
+##### 7.4 HMD Loss 梯度傳播機制（關鍵修復）
+
+**⚠️ 重要：Penalty 的梯度問題與修復**
+
+在 HMD Loss 的實現中，有一個**關鍵的梯度傳播問題**，這會導致即使設置了很大的 `hmd_loss_weight`（如 10000），HMD Loss 也可能沒有實際效果。
+
+###### 7.4.1 問題根源：Penalty 沒有梯度
+
+**原始實現的問題**：
+
+當使用 penalty（漏檢懲罰）時，原始代碼使用了常量 tensor：
+
+```python
+# ❌ 錯誤：常量 tensor 沒有梯度
+hmd_error = torch.tensor(self.hmd_penalty_none, device=device)  # 1000.0
+```
+
+**為什麼沒有梯度？**
+
+1. **常量 tensor 的特性**：
+   - `torch.tensor(1000.0, device=device)` 創建的是一個**常量值**
+   - 這個值不依賴於模型的任何預測輸出
+   - 在反向傳播時，梯度無法通過常量傳播到模型參數
+
+2. **梯度傳播鏈斷裂**：
+   ```
+   模型預測 → HMD Loss 計算 → Penalty（常量）→ 總損失
+                    ↑                    ↑
+                有梯度              無梯度（斷裂）
+   ```
+   - 即使 `hmd_loss_weight=10000`，penalty 部分也不會產生梯度
+   - 模型無法從 penalty 中學習，HMD Loss 實際上沒有效果
+
+3. **為什麼 HMD 誤差有梯度？**
+
+當兩個目標都檢測到時，HMD 誤差是這樣計算的：
+
+```python
+# ✅ 正確：依賴於預測，有梯度
+pred_hmd = self._calculate_hmd_from_boxes(
+    pred_boxes_fg[mentum_idx], pred_boxes_fg[hyoid_idx]  # 依賴於 pred_bboxes
+)
+gt_hmd = self._calculate_hmd_from_boxes(
+    target_boxes_fg[mentum_target_idx], target_boxes_fg[hyoid_target_idx]  # 常量
+)
+hmd_error = torch.abs(pred_hmd - gt_hmd)  # 依賴於 pred_hmd，有梯度
+```
+
+**關鍵點**：
+- `pred_hmd` 是從 `pred_boxes_fg`（模型預測的 bbox）計算出來的
+- `pred_boxes_fg` 依賴於模型的輸出，因此有梯度
+- `hmd_error = |pred_hmd - gt_hmd|` 依賴於 `pred_hmd`，因此也有梯度
+- 梯度可以通過 `pred_hmd` → `pred_boxes_fg` → 模型參數 傳播
+
+###### 7.4.2 修復方案：讓 Penalty 依賴於預測
+
+**修復後的實現**：
+
+讓 penalty 依賴於預測的置信度，確保梯度能正確傳播：
+
+```python
+# ✅ 正確：依賴於預測置信度，有梯度
+# 情況 1：沒有檢測到任何目標
+max_conf = pred_conf[b].max() if pred_conf[b].numel() > 0 else torch.tensor(0.0, device=device)
+hmd_error = torch.tensor(self.hmd_penalty_none, device=device) * (1.0 + max_conf)
+# max_conf 依賴於 pred_conf，pred_conf 依賴於模型輸出，因此有梯度
+
+# 情況 2：只檢測到一個目標
+min_conf = torch.min(mentum_conf, hyoid_conf)
+hmd_error = torch.tensor(self.hmd_penalty_single, device=device) * (1.0 + min_conf)
+# min_conf 依賴於預測置信度，因此有梯度
+```
+
+**為什麼預測置信度有梯度？**
+
+1. **置信度的來源**：
+   ```python
+   pred_conf = pred_scores.sigmoid()  # pred_scores 是模型的分類輸出
+   ```
+   - `pred_scores` 是模型的分類頭（classification head）的輸出
+   - `pred_scores` 依賴於模型的權重參數，因此有梯度
+
+2. **梯度傳播鏈**：
+   ```
+   模型參數 → pred_scores → pred_conf → penalty → HMD Loss → 總損失
+      ↑           ↑            ↑          ↑          ↑
+   有梯度      有梯度       有梯度      有梯度     有梯度
+   ```
+   - 現在梯度可以完整地從總損失傳播回模型參數
+
+3. **Penalty 值的變化**：
+   - 原始：`penalty = 1000.0`（固定值，無梯度）
+   - 修復後：`penalty = 1000.0 * (1.0 + max_conf)`
+     - 如果 `max_conf = 0.0`（完全沒有預測），`penalty = 1000.0`
+     - 如果 `max_conf = 0.5`（中等置信度），`penalty = 1500.0`
+     - 如果 `max_conf = 0.9`（高置信度），`penalty = 1900.0`
+
+###### 7.4.3 為什麼高置信度但仍然漏檢應該受到更大懲罰？
+
+**設計理念**：
+
+1. **高置信度但漏檢 = 模型過度自信但錯誤**：
+   - 如果模型對某個位置有很高的置信度（如 0.9），但實際上沒有檢測到目標
+   - 這意味著模型**過度自信**，認為某個位置有目標，但實際上沒有
+   - 這種情況應該受到**更大的懲罰**，因為模型需要學習"不要過度自信"
+
+2. **低置信度但漏檢 = 模型不確定**：
+   - 如果模型對所有位置都有很低的置信度（如 0.1），沒有檢測到目標
+   - 這意味著模型**不確定**，不知道目標在哪裡
+   - 這種情況的懲罰相對較小，因為模型至少知道自己不確定
+
+3. **數學表達**：
+   ```
+   penalty = base_penalty × (1.0 + max_conf)
+   
+   情況 A：max_conf = 0.0（完全沒有預測）
+   → penalty = 1000.0 × (1.0 + 0.0) = 1000.0
+   
+   情況 B：max_conf = 0.5（中等置信度但漏檢）
+   → penalty = 1000.0 × (1.0 + 0.5) = 1500.0  （+50%）
+   
+   情況 C：max_conf = 0.9（高置信度但漏檢）
+   → penalty = 1000.0 × (1.0 + 0.9) = 1900.0  （+90%）
+   ```
+
+4. **訓練效果**：
+   - 模型會學習到：**高置信度但漏檢會受到更大懲罰**
+   - 這鼓勵模型：
+     - 要麼提高檢測率（減少漏檢）
+     - 要麼降低不確定的預測的置信度（避免過度自信）
+
+**實際影響**：
+
+- **修復前**：即使 `hmd_loss_weight=10000`，penalty 部分也沒有梯度，HMD Loss 沒有實際效果
+- **修復後**：penalty 有梯度，模型可以從 penalty 中學習，HMD Loss 能真正影響訓練
+
+**程式碼位置**：
+
+- 修復實現：`ultralytics/ultralytics/utils/loss.py` 第 671-759 行
+- 關鍵修復點：
+  - 第 671-677 行：沒有檢測到任何目標時的 penalty
+  - 第 733-751 行：只檢測到一個目標時的 penalty
+  - 第 753-759 行：兩個目標都漏檢時的 penalty
+
+##### 7.5 為什麼修改代碼後不需要重新安裝？
+
+**重要說明**：如果 ultralytics 包是以**可編輯模式（editable mode）**安裝的，修改代碼後**不需要重新安裝**。
+
+###### 7.5.1 可編輯模式安裝（`pip install -e .`）
+
+**什麼是可編輯模式？**
+
+當使用 `pip install -e .` 安裝包時，Python 會：
+1. **創建一個鏈接**（而不是複製文件）到源代碼目錄
+2. **直接從源代碼目錄導入模塊**，而不是從 `site-packages`
+3. **修改源代碼立即生效**，不需要重新安裝
+
+**安裝方式**（在 `ultralytics` 目錄下）：
+```bash
+cd ultralytics
+pip install -e .
+```
+
+**如何確認是否是可編輯模式？**
+
+1. **檢查安裝信息**：
+   ```bash
+   pip show ultralytics
+   ```
+   如果看到 `Location: D:\workplace\project_management\github_project\ultrasound-airway-detection2\ultralytics`，說明是可編輯模式。
+
+2. **檢查 Python 導入路徑**：
+   ```python
+   import ultralytics
+   import inspect
+   print(inspect.getfile(ultralytics))
+   ```
+   如果路徑指向項目目錄（而不是 `site-packages`），說明是可編輯模式。
+
+###### 7.5.2 為什麼代碼中還需要強制重新加載模塊？
+
+雖然可編輯模式安裝後修改會立即生效，但在某些情況下，Python 可能已經**緩存了舊版本的模塊**：
+
+1. **模塊已被導入**：如果 `ultralytics.utils.loss` 已經被導入過，Python 會使用緩存版本
+2. **多個導入路徑**：如果同時存在已安裝的包和本地修改的包，Python 可能優先使用已安裝的版本
+
+**解決方案**：在 `train_yolo.py` 中，我們添加了強制重新加載模塊的邏輯：
+
+```python
+# 確保導入本地修改的版本
+local_ultralytics_path = Path(__file__).parent.parent
+if str(local_ultralytics_path) not in sys.path:
+    sys.path.insert(0, str(local_ultralytics_path))
+
+# 強制重新加載模塊（清除緩存）
+if 'ultralytics.utils.loss' in sys.modules:
+    importlib.reload(sys.modules['ultralytics.utils.loss'])
+
+from ultralytics.utils.loss import v8DetectionLoss
+```
+
+**這樣做的好處**：
+- ✅ 確保使用本地修改的版本，而不是已安裝的版本
+- ✅ 清除 Python 的模塊緩存，強制重新加載
+- ✅ 即使包沒有以可編輯模式安裝，也能正常工作（通過 `sys.path.insert`）
+
+###### 7.5.3 什麼時候需要重新安裝？
+
+**需要重新安裝的情況**：
+
+1. **包沒有以可編輯模式安裝**：
+   ```bash
+   # 如果之前是這樣安裝的（錯誤）
+   pip install ultralytics
+   
+   # 需要改為可編輯模式（正確）
+   cd ultralytics
+   pip install -e .
+   ```
+
+2. **修改了 `pyproject.toml` 或 `setup.py`**：
+   - 添加了新的依賴項
+   - 修改了包結構
+   - 需要重新安裝以應用這些更改
+
+3. **Python 環境問題**：
+   - 切換了 conda/virtualenv 環境
+   - 需要在新環境中重新安裝
+
+**不需要重新安裝的情況**：
+
+1. ✅ **只修改了 `.py` 源代碼文件**（如 `loss.py`、`train_yolo.py`）
+2. ✅ **包已經以可編輯模式安裝**（`pip install -e .`）
+3. ✅ **代碼中已經有強制重新加載邏輯**（如 `train_yolo.py` 中的實現）
+
+###### 7.5.4 如何確認修改是否生效？
+
+**方法 1：檢查導入路徑**（在訓練腳本中添加）：
+```python
+import ultralytics.utils.loss
+import inspect
+print(f"loss.py 路徑: {inspect.getfile(ultralytics.utils.loss)}")
+# 應該顯示：D:\workplace\project_management\github_project\ultrasound-airway-detection2\ultralytics\ultralytics\utils\loss.py
+```
+
+**方法 2：檢查函數簽名**（已在代碼中實現）：
+```python
+import inspect
+sig = inspect.signature(v8DetectionLoss.__init__)
+print(f"v8DetectionLoss.__init__ signature: {sig}")
+# 應該包含 use_hmd_loss 參數
+```
+
+**方法 3：查看訓練日誌**：
+- 如果看到 `v8DetectionLoss: HMD Loss enabled - weight=10000.0`，說明修改已生效
+- 如果看到 `TypeError: ... got an unexpected keyword argument 'use_hmd_loss'`，說明仍在使用舊版本
+
+##### 7.6 EMA 模型與 Criterion 配置
+
+**重要說明**：在 Ultralytics YOLO 訓練中，驗證階段使用的是 **EMA（Exponential Moving Average，指數移動平均）模型**，而不是訓練模型本身。這意味著任何自定義 loss 配置都必須同時應用到訓練模型和 EMA 模型。
+
+**EMA 模型是什麼？**
+
+EMA 模型是訓練模型的平滑版本，通過對歷史權重進行指數移動平均來維護：
+
+```python
+# EMA 更新公式（每次訓練步驟後）
+EMA_weight = 0.9999 × EMA_weight + 0.0001 × current_weight
+```
+
+**為什麼使用 EMA 模型？**
+- **更穩定**：平滑權重變化，減少訓練波動
+- **更好的驗證性能**：平滑後的權重在驗證集上通常表現更好
+- **減少過擬合**：對訓練噪聲更不敏感
+
+**驗證階段使用 EMA 模型**：
+
+在 `ultralytics/ultralytics/engine/validator.py` 第 151 行：
+```python
+model = trainer.ema.ema or trainer.model  # 優先使用 EMA 模型
+```
+
+**問題：EMA 模型的 Criterion 需要同步配置**
+
+當我們修改 loss 函數（如添加 HMD loss、Focal Loss、Dimension Weights）時，必須確保：
+1. **訓練模型的 criterion** 被正確配置
+2. **EMA 模型的 criterion** 也被正確配置（因為驗證階段使用 EMA 模型）
+
+**解決方案：`set_custom_loss_callback`**
+
+所有 loss 函數的修改都必須通過 `set_custom_loss_callback` 回調函數來實現，這個回調會在 `on_train_start` 時觸發：
+
+**實現位置**：`ultralytics/mycodes/train_yolo.py` 第 1197-1262 行
+
+```python
+def set_custom_loss_callback(trainer):
+    """Set dimension weights, focal loss, and HMD loss after trainer initialization"""
+    # 1. 設置參數到 trainer.args
+    if use_hmd_loss_flag:
+        setattr(trainer.args, 'use_hmd_loss', True)
+        setattr(trainer.args, 'hmd_loss_weight', hmd_loss_weight_value)
+        # ... 其他參數
+    
+    # 2. 重新創建訓練模型的 criterion
+    if updated and hasattr(trainer.model, 'init_criterion'):
+        trainer.model.criterion = None
+        trainer.model.criterion = trainer.model.init_criterion()
+    
+    # 3. ⚠️ 關鍵：同時更新 EMA 模型的 criterion
+    if hasattr(trainer, 'ema') and trainer.ema is not None:
+        if hasattr(trainer.ema.ema, 'init_criterion'):
+            trainer.ema.ema.criterion = None
+            trainer.ema.ema.criterion = trainer.ema.ema.init_criterion()
+        else:
+            # 如果 EMA 模型沒有 init_criterion，則從訓練模型複製
+            import copy
+            trainer.ema.ema.criterion = copy.deepcopy(trainer.model.criterion)
+```
+
+**為什麼必須同時更新 EMA 模型的 Criterion？**
+
+1. **驗證階段使用 EMA 模型**：
+   - 驗證階段會調用 `model.loss()` 來計算損失
+   - 如果 EMA 模型的 criterion 沒有 HMD loss 配置，驗證階段的 loss 計算就不會包含 HMD loss
+   - 這會導致啟用和未啟用 `--use_hmd_loss` 的結果相同
+
+2. **HMD Loss 統計信息的獲取**：
+   - HMD loss 的統計信息（`hmd_loss_sum`, `hmd_loss_count`）在訓練過程中累積在**訓練模型的 criterion** 中
+   - 驗證階段雖然使用 EMA 模型，但 HMD loss 值應該從**訓練模型的 criterion** 中獲取（因為統計信息在那裡）
+   - 因此，`on_val_end_callback` 會優先從 `trainer.model.criterion` 獲取 HMD loss 統計信息
+
+**所有 Loss 修改都必須經過這一層**
+
+無論是以下哪種 loss 修改，都必須通過 `set_custom_loss_callback` 來實現：
+- ✅ **HMD Loss**：`--use_hmd_loss`, `--hmd_loss_weight` 等
+- ✅ **Focal Loss**：`--use_focal_loss`, `--focal_gamma`, `--focal_alpha`
+- ✅ **Dimension Weights**：`--use_dim_weights`, `--dim_weights`
+- ✅ **Loss 權重調整**：`--box`, `--cls`, `--dfl`
+
+**註冊回調**：
+
+```python
+# 在 train_yolo.py 中（第 1261-1262 行）
+if use_dim_weights_flag or use_focal_loss_flag or use_hmd_loss_flag:
+    model.add_callback("on_train_start", set_custom_loss_callback)
+```
+
+**重要提醒**：
+
+⚠️ **如果直接修改 `trainer.model.criterion` 而不通過 `set_custom_loss_callback`，會導致以下問題**：
+- EMA 模型的 criterion 沒有被更新
+- 驗證階段的 loss 計算不包含自定義 loss
+- 自定義 loss 的效果無法在驗證階段體現
+- 啟用和未啟用自定義 loss 的結果可能相同
+
+**程式碼位置**：
+- `set_custom_loss_callback`：`ultralytics/mycodes/train_yolo.py` 第 1197-1262 行
+- EMA 模型使用：`ultralytics/ultralytics/engine/validator.py` 第 151 行
+- HMD loss 獲取：`ultralytics/mycodes/train_yolo.py` 第 567-609 行（`on_val_end_callback`）
 
 #### 8. 訓練監控指標
 
@@ -972,9 +1334,54 @@ python ultralytics/mycodes/analyze_hmd_distribution.py --yaml-dir yolo_dataset/d
 #### 10. 參數調優建議
 
 - **`--hmd_loss_weight` (λ_hmd)**：
-  - 預設值：`0.1`
-  - 建議範圍：`0.05 - 0.2`
+  - 預設值：`0.5`
+  - 建議範圍：`0.2 - 1.0`
   - 過大可能影響標準檢測性能，過小可能無法有效優化 HMD
+  
+  **詳細分析**：
+  
+  **當前情況分析**：
+  - **Box loss（縮放後）**：
+    - Box loss (raw) ≈ 0.5-2.0
+    - Box loss (scaled by `box=7.5`) ≈ **3.75-15.0**
+  
+  - **HMD loss（未加權）**：
+    - 兩個都檢測到：HMD error ≈ 50-500 像素
+    - 只檢測到一個：penalty = 500.0 像素
+    - 都沒檢測到：penalty = 1000.0 像素
+    - Batch 級別加權平均後：約 **100-800 像素**
+  
+  - **當前預設值 0.5 的影響**：
+    - 加權後的 HMD loss = 0.5 × (100-800) = **50-400**
+    - 對比 Box loss (3.75-15.0)，HMD loss 的影響很大（約為 box loss 的 10-25 倍）
+  
+  **建議設置**：
+  
+  如果想要不同的影響程度，可以參考以下設置：
+  
+  | 權重值 | 影響程度 | 加權後 HMD Loss | 說明 |
+  |--------|---------|----------------|------|
+  | **0.1** | 中等 | 10-80 | HMD loss 約為 box loss 的 2-5 倍 |
+  | **0.2-0.3** | 較大 | 20-240 | HMD loss 約為 box loss 的 5-15 倍，推薦 |
+  | **0.5** (預設) | 很大 | 50-400 | HMD loss 約為 box loss 的 10-25 倍，需謹慎 |
+  | **1.0** | 極大 | 100-800 | HMD loss 約為 box loss 的 20-50 倍，可能過度優化 |
+  
+  **推薦設置**：
+  - **預設值 0.5**：適合大多數情況，對 HMD 優化有較大影響
+  - **0.2-0.3**：如果想要更平衡的優化（HMD 和一般檢測目標）
+  - **0.1**：如果想要較小的影響，保持對一般檢測目標的關注
+  - **1.0**：僅在 HMD 優化是唯一目標時使用，需謹慎
+  
+  **注意事項**：
+  - 如果權重過大（>0.5），可能：
+    - 過度優化 HMD 精度，忽略其他檢測目標
+    - 導致訓練不穩定
+    - 降低整體檢測性能
+  - 建議：
+    - 先用預設值 0.5 訓練，觀察效果
+    - 如果 HMD 指標仍不夠好，可以嘗試增加到 0.7-1.0
+    - 如果整體檢測性能下降，可以降低到 0.2-0.3
+    - 監控訓練過程中的 loss 曲線，確保穩定
 
 - **`--hmd_penalty_single`**：
   - 預設值：`500.0` 像素
@@ -995,7 +1402,7 @@ python ultralytics/mycodes/analyze_hmd_distribution.py --yaml-dir yolo_dataset/d
 
 **HMD Loss Parameters / HMD Loss 參數說明**:
 - `--use_hmd_loss`: 啟用 HMD loss（必需參數）
-- `--hmd_loss_weight`: HMD loss 權重（λ_hmd，預設：0.1）
+- `--hmd_loss_weight`: HMD loss 權重（λ_hmd，預設：0.5）
 - `--hmd_penalty_single`: 只檢測到一個目標時的懲罰值（預設：500.0 像素）
 - `--hmd_penalty_none`: 兩個目標都漏檢時的懲罰值（預設：1000.0 像素）
 - `--hmd_penalty_coeff`: 單個檢測情況下的權重係數（預設：0.5）
@@ -1024,7 +1431,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 ```bash
 # For production training / 正式訓練
 python ultralytics/mycodes/best_epoch.py detect 1 \
-  --run_name="ultrasound-det_123_ES-v3-4070/exp0"
+  --run_name="ultrasound-det_123_ES-v3-4090/exp0"
 
 # For test training / 測試訓練
 python ultralytics/mycodes/best_epoch.py detect 1 \
@@ -1067,7 +1474,7 @@ python ultralytics/mycodes/train_yolo.py <model> <database> [options]
 | `--use_dim_weights` | - | Enable dimension-specific weights |
 | `--dim_weights` | - | `W_L W_T W_R W_B` (e.g., `5.0 1.0 5.0 1.0`) |
 | `--use_hmd_loss` | - | Enable HMD loss for `det_123` database only |
-| `--hmd_loss_weight` | `0.1` | HMD loss weight (λ_hmd) |
+| `--hmd_loss_weight` | `0.5` | HMD loss weight (λ_hmd) |
 | `--hmd_penalty_single` | `500.0` | Penalty when only one target detected (pixels) |
 | `--hmd_penalty_none` | `1000.0` | Penalty when both targets missed (pixels) |
 | `--hmd_penalty_coeff` | `0.5` | Penalty coefficient for single detection |
@@ -1238,7 +1645,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --epochs=10 \
   --seed 42 \
   --wandb \
-  --project="ultrasound-det_123_ES-v3-4070" \
+  --project="ultrasound-det_123_ES-v3-4090" \
   --exp_name="exp0"
 ```
 
@@ -1247,7 +1654,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
 ```bash
 python ultralytics/mycodes/test_yolo.py detect "" det_123 \
   --db_version 3 \
-  --weights ultralytics/runs/train/ultrasound-det_123_ES-v3-4070/exp0/weights/best.pt \
+  --weights ultralytics/runs/train/ultrasound-det_123_ES-v3-4090/exp0/weights/best.pt \
   --dev cuda:0 \
   --batch_size 4 \
   --output-name test_exp0

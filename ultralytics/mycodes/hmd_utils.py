@@ -121,10 +121,24 @@ def calculate_hmd_loss(pred_boxes: torch.Tensor, pred_conf: torch.Tensor, pred_c
             
         elif (has_mentum_pred or has_hyoid_pred) and (has_mentum_target and has_hyoid_target):
             # Single detected: use penalty
-            detected_conf = mentum_conf[0] if has_mentum_pred else hyoid_conf[0]
-            hmd_error = torch.tensor(penalty_single, device=device)
-            weight = torch.min(mentum_conf[0] if has_mentum_pred else torch.tensor(0.0, device=device),
-                             hyoid_conf[0] if has_hyoid_pred else torch.tensor(0.0, device=device)) * penalty_coeff
+            # CRITICAL: Make penalty depend on predictions to maintain gradient
+            # penalty = base_penalty * (1.0 + min_conf) where min_conf depends on predictions
+            # This ensures gradient flows through predictions while keeping penalty value reasonable
+            if has_mentum_pred:
+                mentum_conf_val = mentum_conf[0] if len(mentum_conf) > 0 else torch.tensor(0.0, device=device)
+            else:
+                mentum_conf_val = torch.tensor(0.0, device=device)
+            
+            if has_hyoid_pred:
+                hyoid_conf_val = hyoid_conf[0] if len(hyoid_conf) > 0 else torch.tensor(0.0, device=device)
+            else:
+                hyoid_conf_val = torch.tensor(0.0, device=device)
+            
+            min_conf = torch.min(mentum_conf_val, hyoid_conf_val)
+            # Use min_conf to create gradient: penalty scales with confidence
+            # Higher confidence but missing one target = higher penalty (encourages detecting both)
+            hmd_error = torch.tensor(penalty_single, device=device) * (1.0 + min_conf)
+            weight = min_conf * penalty_coeff
             
             hmd_errors.append(hmd_error)
             weights.append(weight)
@@ -132,8 +146,14 @@ def calculate_hmd_loss(pred_boxes: torch.Tensor, pred_conf: torch.Tensor, pred_c
             
         else:
             # None detected: use maximum penalty
-            hmd_error = torch.tensor(penalty_none, device=device)
-            weight = torch.tensor(1.0, device=device)
+            # CRITICAL: Make penalty depend on predictions to maintain gradient
+            # penalty = base_penalty * (1.0 + max_conf) where max_conf depends on predictions
+            # This ensures gradient flows through predictions while keeping penalty value reasonable
+            max_conf = pred_conf[b].max() if pred_conf[b].numel() > 0 else torch.tensor(0.0, device=device)
+            # Use max_conf to create gradient: penalty scales with confidence
+            # Higher confidence but no detection = higher penalty (encourages detection)
+            hmd_error = torch.tensor(penalty_none, device=device) * (1.0 + max_conf)
+            weight = torch.tensor(1.0, device=device, requires_grad=False)
             
             hmd_errors.append(hmd_error)
             weights.append(weight)

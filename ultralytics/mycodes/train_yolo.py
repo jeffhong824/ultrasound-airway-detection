@@ -60,17 +60,24 @@ def print_validation_metrics(trainer):
             if "train/hmd_loss" in validator._additional_metrics:
                 hmd_loss_value = validator._additional_metrics["train/hmd_loss"]
     # Fallback: try to get directly from criterion
+    # NOTE: During validation, trainer.model might be EMA model, which doesn't accumulate training loss
+    # So we should rely on the value saved in on_train_epoch_end callback
     if hmd_loss_value is None and hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
         try:
             criterion = trainer.model.criterion
             if hasattr(criterion, 'get_avg_hmd_loss'):
                 # Get average HMD loss across all batches in this epoch
-                hmd_loss_value = criterion.get_avg_hmd_loss()
-            elif hasattr(criterion, 'last_hmd_loss'):
+                hmd_loss_avg = criterion.get_avg_hmd_loss()
+                # Only use if count > 0 (meaning loss was actually accumulated)
+                if hasattr(criterion, 'hmd_loss_count') and criterion.hmd_loss_count > 0:
+                    hmd_loss_value = hmd_loss_avg
+                    logging.debug(f"Got HMD loss from criterion.get_avg_hmd_loss(): {hmd_loss_value} (count={criterion.hmd_loss_count})")
+            elif hasattr(criterion, 'last_hmd_loss') and criterion.last_hmd_loss != 0.0:
                 # Fallback to last batch loss if average not available
                 hmd_loss_value = float(criterion.last_hmd_loss)
-        except Exception:
-            pass
+                logging.debug(f"Got HMD loss from criterion.last_hmd_loss: {hmd_loss_value}")
+        except Exception as e:
+            logging.debug(f"Failed to get HMD loss from criterion: {e}")
     
     # Print additional metrics
     print(f"\n📊 Additional Metrics:", flush=True)
@@ -190,18 +197,31 @@ def log_train_metrics(trainer):
         try:
             criterion = trainer.model.criterion
             if hasattr(criterion, 'get_avg_hmd_loss'):
-                hmd_loss_value = criterion.get_avg_hmd_loss()
-            elif hasattr(criterion, 'last_hmd_loss'):
+                hmd_loss_avg = criterion.get_avg_hmd_loss()
+                # Only use if we actually have accumulated loss (count > 0)
+                if hasattr(criterion, 'hmd_loss_count') and criterion.hmd_loss_count > 0:
+                    hmd_loss_value = hmd_loss_avg
+                elif hasattr(criterion, 'last_hmd_loss') and criterion.last_hmd_loss != 0.0:
+                    # Fallback to last batch if count is 0
+                    hmd_loss_value = float(criterion.last_hmd_loss)
+            elif hasattr(criterion, 'last_hmd_loss') and criterion.last_hmd_loss != 0.0:
                 hmd_loss_value = float(criterion.last_hmd_loss)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"Failed to get HMD loss in log_train_metrics: {e}")
     
     # Also check _additional_metrics as fallback (in case on_val_end was called first)
     if hmd_loss_value is None and hasattr(trainer, '_additional_metrics') and "train/hmd_loss" in trainer._additional_metrics:
         hmd_loss_value = trainer._additional_metrics["train/hmd_loss"]
     
+    # Save to _additional_metrics for validation to access
     if hmd_loss_value is not None:
+        if not hasattr(trainer, '_additional_metrics'):
+            trainer._additional_metrics = {}
+        trainer._additional_metrics["train/hmd_loss"] = hmd_loss_value
         logs["train/hmd_loss"] = float(hmd_loss_value)
+        logging.debug(f"✅ log_train_metrics: Saved HMD loss {hmd_loss_value} to _additional_metrics")
+    else:
+        logging.debug(f"⚠️ log_train_metrics: HMD loss is None, cannot save")
     
     # HMD metrics (always log for det_123, even if 0) - pixel based only
     # Use val/hmd/ prefix for validation metrics in W&B
@@ -565,9 +585,13 @@ def create_on_val_end_callback(args):
         logging.debug(f"on_val_end_callback triggered: validator={validator is not None}, trainer={trainer is not None}")
         
         # Extract HMD loss from model criterion if available
+        # IMPORTANT: Validation uses EMA model, but HMD loss statistics are accumulated in training model's criterion
+        # So we should prefer getting HMD loss from trainer.model.criterion (training model) rather than EMA model's criterion
         # Prefer average HMD loss (across all batches) over last batch loss
         # In validation, hmd_loss_count might be 0, so use last_hmd_loss as fallback
         hmd_loss_value = None
+        
+        # First, try to get from training model's criterion (where statistics are actually accumulated)
         if trainer is not None and hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
             try:
                 criterion = trainer.model.criterion
@@ -588,8 +612,10 @@ def create_on_val_end_callback(args):
             except Exception as e:
                 logging.debug(f"Failed to get HMD loss from trainer criterion: {e}")
                 pass
-        elif validator is not None and hasattr(validator, 'model') and hasattr(validator.model, 'criterion'):
-            # Try to get from validator's model directly
+        
+        # If not found in training model, try validator's model (which might be EMA model)
+        # But note: EMA model's criterion statistics may not be accumulated during validation
+        if hmd_loss_value is None and validator is not None and hasattr(validator, 'model') and hasattr(validator.model, 'criterion'):
             try:
                 criterion = validator.model.criterion
                 if hasattr(criterion, 'get_avg_hmd_loss'):
@@ -1073,7 +1099,7 @@ if __name__=='__main__':
     
     # HMD loss parameters (for det_123 database)
     parser.add_argument('--use_hmd_loss', action='store_true', help='Enable HMD loss for det_123 database')
-    parser.add_argument('--hmd_loss_weight', type=float, default=0.1, help='Weight for HMD loss (λ_hmd, default: 0.1)')
+    parser.add_argument('--hmd_loss_weight', type=float, default=0.5, help='Weight for HMD loss (λ_hmd, default: 0.5)')
     parser.add_argument('--hmd_penalty_single', type=float, default=500.0, help='Penalty value when only one target is detected (default: 500.0 pixels)')
     parser.add_argument('--hmd_penalty_none', type=float, default=1000.0, help='Penalty value when both targets are missed (default: 1000.0 pixels)')
     parser.add_argument('--hmd_penalty_coeff', type=float, default=0.5, help='Penalty coefficient for single detection weight (default: 0.5)')
@@ -1198,13 +1224,35 @@ if __name__=='__main__':
         """Set dimension weights, focal loss, and HMD loss after trainer initialization and recreate loss function"""
         updated = False
         
+        # CRITICAL: Check if trainer.model.args is the same object as trainer.args
+        # If they are the same, we only need to set one. If different, we need to set both.
+        model_args_is_same = hasattr(trainer, 'model') and hasattr(trainer.model, 'args') and trainer.model.args is trainer.args
+        
         # Set database attribute (needed for HMD loss check in validation)
+        # IMPORTANT: Must set both trainer.args AND trainer.model.args
+        # because v8DetectionLoss reads from model.args (not trainer.args)
         if isinstance(trainer.args, dict):
             trainer.args['database'] = args.database
         else:
             setattr(trainer.args, 'database', args.database)
         
+        # Also set to model.args (critical for init_criterion to read correct values)
+        # Only set if model.args is a different object
+        if not model_args_is_same and hasattr(trainer, 'model') and hasattr(trainer.model, 'args'):
+            if isinstance(trainer.model.args, dict):
+                trainer.model.args['database'] = args.database
+            else:
+                setattr(trainer.model.args, 'database', args.database)
+        
+        # Debug: Log whether args are the same object
+        if use_hmd_loss_flag:
+            logging.info(f"🔍 Debug: trainer.args is trainer.model.args? {model_args_is_same}")
+            if hasattr(trainer, 'model') and hasattr(trainer.model, 'args'):
+                logging.info(f"   trainer.args id: {id(trainer.args)}")
+                logging.info(f"   trainer.model.args id: {id(trainer.model.args)}")
+        
         # Set dimension weights
+        # IMPORTANT: Must set both trainer.args AND trainer.model.args
         if use_dim_weights_flag and dim_weights_value:
             if isinstance(trainer.args, dict):
                 trainer.args['use_dim_weights'] = True
@@ -1212,9 +1260,20 @@ if __name__=='__main__':
             else:
                 setattr(trainer.args, 'use_dim_weights', True)
                 setattr(trainer.args, 'dim_weights', dim_weights_value)
+            
+            # Also set to model.args (critical for init_criterion to read correct values)
+            # Only set if model.args is a different object
+            if not model_args_is_same and hasattr(trainer, 'model') and hasattr(trainer.model, 'args'):
+                if isinstance(trainer.model.args, dict):
+                    trainer.model.args['use_dim_weights'] = True
+                    trainer.model.args['dim_weights'] = dim_weights_value
+                else:
+                    setattr(trainer.model.args, 'use_dim_weights', True)
+                    setattr(trainer.model.args, 'dim_weights', dim_weights_value)
             updated = True
         
         # Set focal loss settings
+        # IMPORTANT: Must set both trainer.args AND trainer.model.args
         if use_focal_loss_flag:
             if isinstance(trainer.args, dict):
                 trainer.args['use_focal_loss'] = True
@@ -1224,9 +1283,23 @@ if __name__=='__main__':
                 setattr(trainer.args, 'use_focal_loss', True)
                 setattr(trainer.args, 'focal_gamma', focal_gamma_value)
                 setattr(trainer.args, 'focal_alpha', focal_alpha_value)
+            
+            # Also set to model.args (critical for init_criterion to read correct values)
+            # Only set if model.args is a different object
+            if not model_args_is_same and hasattr(trainer, 'model') and hasattr(trainer.model, 'args'):
+                if isinstance(trainer.model.args, dict):
+                    trainer.model.args['use_focal_loss'] = True
+                    trainer.model.args['focal_gamma'] = focal_gamma_value
+                    trainer.model.args['focal_alpha'] = focal_alpha_value
+                else:
+                    setattr(trainer.model.args, 'use_focal_loss', True)
+                    setattr(trainer.model.args, 'focal_gamma', focal_gamma_value)
+                    setattr(trainer.model.args, 'focal_alpha', focal_alpha_value)
             updated = True
         
         # Set HMD loss settings
+        # IMPORTANT: Must set both trainer.args AND trainer.model.args
+        # because v8DetectionLoss.__init__ reads from model.args (not trainer.args)
         if use_hmd_loss_flag:
             if isinstance(trainer.args, dict):
                 trainer.args['use_hmd_loss'] = True
@@ -1240,12 +1313,220 @@ if __name__=='__main__':
                 setattr(trainer.args, 'hmd_penalty_single', hmd_penalty_single_value)
                 setattr(trainer.args, 'hmd_penalty_none', hmd_penalty_none_value)
                 setattr(trainer.args, 'hmd_penalty_coeff', hmd_penalty_coeff_value)
+            
+            # Also set to model.args (critical for init_criterion to read correct values)
+            # Only set if model.args is a different object
+            if not model_args_is_same and hasattr(trainer, 'model') and hasattr(trainer.model, 'args'):
+                if isinstance(trainer.model.args, dict):
+                    trainer.model.args['use_hmd_loss'] = True
+                    trainer.model.args['hmd_loss_weight'] = hmd_loss_weight_value
+                    trainer.model.args['hmd_penalty_single'] = hmd_penalty_single_value
+                    trainer.model.args['hmd_penalty_none'] = hmd_penalty_none_value
+                    trainer.model.args['hmd_penalty_coeff'] = hmd_penalty_coeff_value
+                else:
+                    setattr(trainer.model.args, 'use_hmd_loss', True)
+                    setattr(trainer.model.args, 'hmd_loss_weight', hmd_loss_weight_value)
+                    setattr(trainer.model.args, 'hmd_penalty_single', hmd_penalty_single_value)
+                    setattr(trainer.model.args, 'hmd_penalty_none', hmd_penalty_none_value)
+                    setattr(trainer.model.args, 'hmd_penalty_coeff', hmd_penalty_coeff_value)
             updated = True
         
         # Recreate loss function with custom settings
         if updated and hasattr(trainer.model, 'init_criterion'):
+            # Debug: Log what we're setting before recreating criterion
+            if use_hmd_loss_flag:
+                logging.info(f"🔧 Setting HMD loss parameters before recreating criterion:")
+                logging.info(f"   trainer.args.use_hmd_loss = {getattr(trainer.args, 'use_hmd_loss', 'NOT SET')}")
+                logging.info(f"   trainer.args.hmd_loss_weight = {getattr(trainer.args, 'hmd_loss_weight', 'NOT SET')}")
+                if hasattr(trainer, 'model') and hasattr(trainer.model, 'args'):
+                    logging.info(f"   trainer.model.args.use_hmd_loss = {getattr(trainer.model.args, 'use_hmd_loss', 'NOT SET')}")
+                    logging.info(f"   trainer.model.args.hmd_loss_weight = {getattr(trainer.model.args, 'hmd_loss_weight', 'NOT SET')}")
+            
             trainer.model.criterion = None  # Clear existing criterion
-            trainer.model.criterion = trainer.model.init_criterion()
+            
+            # CRITICAL FIX: Directly create v8DetectionLoss with explicit parameters
+            # instead of relying on model.args (which may not be set correctly)
+            if use_hmd_loss_flag:
+                # Import from the local modified version (not the installed package)
+                import sys
+                import importlib
+                from pathlib import Path
+                # Ensure we import from the local ultralytics package
+                local_ultralytics_path = Path(__file__).parent.parent
+                if str(local_ultralytics_path) not in sys.path:
+                    sys.path.insert(0, str(local_ultralytics_path))
+                
+                # Force reload the loss module to ensure we get the local version
+                if 'ultralytics.utils.loss' in sys.modules:
+                    importlib.reload(sys.modules['ultralytics.utils.loss'])
+                
+                from ultralytics.utils.loss import v8DetectionLoss
+                logging.info(f"🔧 Creating v8DetectionLoss with explicit HMD parameters:")
+                logging.info(f"   use_hmd_loss=True, hmd_loss_weight={hmd_loss_weight_value}")
+                # Check if v8DetectionLoss accepts these parameters
+                import inspect
+                sig = inspect.signature(v8DetectionLoss.__init__)
+                logging.info(f"   v8DetectionLoss.__init__ signature: {sig}")
+                logging.info(f"   v8DetectionLoss module: {v8DetectionLoss.__module__}")
+                logging.info(f"   v8DetectionLoss file: {inspect.getfile(v8DetectionLoss)}")
+                
+                try:
+                    trainer.model.criterion = v8DetectionLoss(
+                        trainer.model,
+                        use_hmd_loss=True,
+                        hmd_loss_weight=hmd_loss_weight_value,
+                        hmd_penalty_single=hmd_penalty_single_value,
+                        hmd_penalty_none=hmd_penalty_none_value,
+                        hmd_penalty_coeff=hmd_penalty_coeff_value
+                    )
+                except TypeError as e:
+                    logging.error(f"❌ Failed to create v8DetectionLoss with explicit parameters: {e}")
+                    logging.error(f"   This likely means the installed ultralytics package is being used instead of the local version")
+                    logging.error(f"   Please run: cd ultralytics && pip install -e .")
+                    raise
+            elif use_dim_weights_flag or use_focal_loss_flag:
+                # For other custom losses, still use init_criterion but ensure args are set
+                trainer.model.criterion = trainer.model.init_criterion()
+            else:
+                trainer.model.criterion = trainer.model.init_criterion()
+            
+            # Debug: Verify criterion was created with correct settings
+            if use_hmd_loss_flag and hasattr(trainer.model, 'criterion') and trainer.model.criterion is not None:
+                criterion = trainer.model.criterion
+                if hasattr(criterion, 'use_hmd_loss'):
+                    actual_weight = getattr(criterion, 'hmd_loss_weight', 'NOT SET')
+                    logging.info(f"✅ Training model criterion created - use_hmd_loss={criterion.use_hmd_loss}, hmd_loss_weight={actual_weight}")
+                    if criterion.use_hmd_loss != True or actual_weight != hmd_loss_weight_value:
+                        logging.error(f"❌ CRITICAL: Criterion settings mismatch!")
+                        logging.error(f"   Expected: use_hmd_loss=True, hmd_loss_weight={hmd_loss_weight_value}")
+                        logging.error(f"   Actual: use_hmd_loss={criterion.use_hmd_loss}, hmd_loss_weight={actual_weight}")
+                        logging.error(f"   This means HMD loss will NOT be applied correctly!")
+                        # Try to fix by directly passing parameters to init_criterion
+                        logging.warning(f"⚠️ Attempting to fix by recreating criterion with explicit parameters...")
+                        trainer.model.criterion = None
+                        # Directly call init_criterion with parameters
+                        from ultralytics.utils.loss import v8DetectionLoss
+                        # Create a new criterion with explicit parameters
+                        trainer.model.criterion = v8DetectionLoss(
+                            trainer.model,
+                            use_hmd_loss=True,
+                            hmd_loss_weight=hmd_loss_weight_value,
+                            hmd_penalty_single=hmd_penalty_single_value,
+                            hmd_penalty_none=hmd_penalty_none_value,
+                            hmd_penalty_coeff=hmd_penalty_coeff_value
+                        )
+                        logging.info(f"✅ Criterion recreated with explicit parameters")
+                else:
+                    logging.warning(f"⚠️ Criterion created but does not have use_hmd_loss attribute!")
+                    logging.warning(f"   Criterion type: {type(criterion)}")
+                    # Try to fix by directly passing parameters
+                    logging.warning(f"⚠️ Attempting to fix by recreating criterion with explicit parameters...")
+                    trainer.model.criterion = None
+                    from ultralytics.utils.loss import v8DetectionLoss
+                    trainer.model.criterion = v8DetectionLoss(
+                        trainer.model,
+                        use_hmd_loss=True,
+                        hmd_loss_weight=hmd_loss_weight_value,
+                        hmd_penalty_single=hmd_penalty_single_value,
+                        hmd_penalty_none=hmd_penalty_none_value,
+                        hmd_penalty_coeff=hmd_penalty_coeff_value
+                    )
+                    logging.info(f"✅ Criterion recreated with explicit parameters")
+            else:
+                if use_hmd_loss_flag:
+                    logging.error(f"❌ CRITICAL: Criterion is None after recreation! HMD loss will NOT work!")
+                    # Try to create criterion with explicit parameters
+                    logging.warning(f"⚠️ Attempting to create criterion with explicit parameters...")
+                    from ultralytics.utils.loss import v8DetectionLoss
+                    trainer.model.criterion = v8DetectionLoss(
+                        trainer.model,
+                        use_hmd_loss=True,
+                        hmd_loss_weight=hmd_loss_weight_value,
+                        hmd_penalty_single=hmd_penalty_single_value,
+                        hmd_penalty_none=hmd_penalty_none_value,
+                        hmd_penalty_coeff=hmd_penalty_coeff_value
+                    )
+                    logging.info(f"✅ Criterion created with explicit parameters")
+            
+            # Also update EMA model's criterion if it exists
+            # This is critical because validation uses EMA model, and EMA model's criterion
+            # needs to have the same HMD loss configuration as the training model
+            if hasattr(trainer, 'ema') and trainer.ema is not None and hasattr(trainer.ema, 'ema'):
+                # IMPORTANT: Also set args to EMA model so init_criterion can read correct values
+                if hasattr(trainer.ema.ema, 'args'):
+                    if isinstance(trainer.ema.ema.args, dict):
+                        # Copy all custom loss settings to EMA model's args
+                        if use_dim_weights_flag:
+                            trainer.ema.ema.args['use_dim_weights'] = True
+                            trainer.ema.ema.args['dim_weights'] = dim_weights_value
+                        if use_focal_loss_flag:
+                            trainer.ema.ema.args['use_focal_loss'] = True
+                            trainer.ema.ema.args['focal_gamma'] = focal_gamma_value
+                            trainer.ema.ema.args['focal_alpha'] = focal_alpha_value
+                        if use_hmd_loss_flag:
+                            trainer.ema.ema.args['use_hmd_loss'] = True
+                            trainer.ema.ema.args['hmd_loss_weight'] = hmd_loss_weight_value
+                            trainer.ema.ema.args['hmd_penalty_single'] = hmd_penalty_single_value
+                            trainer.ema.ema.args['hmd_penalty_none'] = hmd_penalty_none_value
+                            trainer.ema.ema.args['hmd_penalty_coeff'] = hmd_penalty_coeff_value
+                    else:
+                        # Copy all custom loss settings to EMA model's args
+                        if use_dim_weights_flag:
+                            setattr(trainer.ema.ema.args, 'use_dim_weights', True)
+                            setattr(trainer.ema.ema.args, 'dim_weights', dim_weights_value)
+                        if use_focal_loss_flag:
+                            setattr(trainer.ema.ema.args, 'use_focal_loss', True)
+                            setattr(trainer.ema.ema.args, 'focal_gamma', focal_gamma_value)
+                            setattr(trainer.ema.ema.args, 'focal_alpha', focal_alpha_value)
+                        if use_hmd_loss_flag:
+                            setattr(trainer.ema.ema.args, 'use_hmd_loss', True)
+                            setattr(trainer.ema.ema.args, 'hmd_loss_weight', hmd_loss_weight_value)
+                            setattr(trainer.ema.ema.args, 'hmd_penalty_single', hmd_penalty_single_value)
+                            setattr(trainer.ema.ema.args, 'hmd_penalty_none', hmd_penalty_none_value)
+                            setattr(trainer.ema.ema.args, 'hmd_penalty_coeff', hmd_penalty_coeff_value)
+                
+                if hasattr(trainer.ema.ema, 'init_criterion'):
+                    trainer.ema.ema.criterion = None  # Clear existing criterion
+                    # CRITICAL FIX: Directly create v8DetectionLoss with explicit parameters for EMA model too
+                    if use_hmd_loss_flag:
+                        # Import from the local modified version (not the installed package)
+                        import sys
+                        import importlib
+                        from pathlib import Path
+                        local_ultralytics_path = Path(__file__).parent.parent
+                        if str(local_ultralytics_path) not in sys.path:
+                            sys.path.insert(0, str(local_ultralytics_path))
+                        
+                        # Force reload the loss module to ensure we get the local version
+                        if 'ultralytics.utils.loss' in sys.modules:
+                            importlib.reload(sys.modules['ultralytics.utils.loss'])
+                        
+                        from ultralytics.utils.loss import v8DetectionLoss
+                        try:
+                            trainer.ema.ema.criterion = v8DetectionLoss(
+                                trainer.ema.ema,
+                                use_hmd_loss=True,
+                                hmd_loss_weight=hmd_loss_weight_value,
+                                hmd_penalty_single=hmd_penalty_single_value,
+                                hmd_penalty_none=hmd_penalty_none_value,
+                                hmd_penalty_coeff=hmd_penalty_coeff_value
+                            )
+                            logging.debug("✅ EMA model's criterion recreated with explicit HMD parameters")
+                        except TypeError as e:
+                            logging.error(f"❌ Failed to create EMA v8DetectionLoss: {e}")
+                            logging.error(f"   Please run: cd ultralytics && pip install -e .")
+                            raise
+                    else:
+                        trainer.ema.ema.criterion = trainer.ema.ema.init_criterion()
+                        logging.debug("✅ EMA model's criterion also recreated with custom settings")
+                else:
+                    # If EMA model doesn't have init_criterion, copy criterion from training model
+                    # This ensures EMA model has the same criterion configuration
+                    if hasattr(trainer.model, 'criterion') and trainer.model.criterion is not None:
+                        import copy
+                        trainer.ema.ema.criterion = copy.deepcopy(trainer.model.criterion)
+                        logging.debug("✅ EMA model's criterion copied from training model")
+            
             info_msg = []
             if use_dim_weights_flag:
                 info_msg.append(f"dimension weights: {dim_weights_value}")
@@ -1382,6 +1663,59 @@ if __name__=='__main__':
             except Exception:
                 pass
     model.add_callback("on_train_epoch_start", reset_hmd_loss_callback)
+    
+    # Add callback to save HMD loss at end of each training epoch (before validation)
+    # This ensures we have the training epoch's HMD loss available during validation
+    # NOTE: This must run BEFORE validation, so we use on_train_epoch_end (which runs before on_val_end)
+    def save_hmd_loss_for_validation_callback(trainer):
+        """Save HMD loss from training epoch before validation starts"""
+        if use_hmd_loss_flag and hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+            try:
+                criterion = trainer.model.criterion
+                if hasattr(criterion, 'get_avg_hmd_loss'):
+                    hmd_loss_avg = criterion.get_avg_hmd_loss()
+                    # Only save if we actually have accumulated loss (count > 0)
+                    if hasattr(criterion, 'hmd_loss_count') and criterion.hmd_loss_count > 0:
+                        # Store in trainer for validation to access
+                        if not hasattr(trainer, '_additional_metrics'):
+                            trainer._additional_metrics = {}
+                        trainer._additional_metrics["train/hmd_loss"] = hmd_loss_avg
+                        logging.debug(f"✅ Saved training epoch HMD loss: {hmd_loss_avg} (from {criterion.hmd_loss_count} batches)")
+                    else:
+                        logging.debug(f"⚠️ HMD loss count is 0, cannot save average")
+                elif hasattr(criterion, 'last_hmd_loss') and criterion.last_hmd_loss != 0.0:
+                    if not hasattr(trainer, '_additional_metrics'):
+                        trainer._additional_metrics = {}
+                    trainer._additional_metrics["train/hmd_loss"] = float(criterion.last_hmd_loss)
+                    logging.debug(f"✅ Saved training epoch HMD loss (last batch): {criterion.last_hmd_loss}")
+            except Exception as e:
+                logging.debug(f"❌ Failed to save HMD loss: {e}")
+    # Add this callback with higher priority (lower number = higher priority)
+    # We want it to run after log_train_metrics but before validation
+    model.add_callback("on_train_epoch_end", save_hmd_loss_for_validation_callback)
+    
+    # Add callback to save HMD loss at end of each training epoch (before validation)
+    # This ensures we have the training epoch's HMD loss available during validation
+    def save_hmd_loss_callback(trainer):
+        """Save HMD loss from training epoch before validation starts"""
+        if use_hmd_loss_flag and hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
+            try:
+                criterion = trainer.model.criterion
+                if hasattr(criterion, 'get_avg_hmd_loss'):
+                    hmd_loss_avg = criterion.get_avg_hmd_loss()
+                    # Store in trainer for validation to access
+                    if not hasattr(trainer, '_additional_metrics'):
+                        trainer._additional_metrics = {}
+                    trainer._additional_metrics["train/hmd_loss"] = hmd_loss_avg
+                    logging.debug(f"Saved training epoch HMD loss: {hmd_loss_avg}")
+                elif hasattr(criterion, 'last_hmd_loss') and criterion.last_hmd_loss != 0.0:
+                    if not hasattr(trainer, '_additional_metrics'):
+                        trainer._additional_metrics = {}
+                    trainer._additional_metrics["train/hmd_loss"] = float(criterion.last_hmd_loss)
+                    logging.debug(f"Saved training epoch HMD loss (last batch): {criterion.last_hmd_loss}")
+            except Exception as e:
+                logging.debug(f"Failed to save HMD loss: {e}")
+    model.add_callback("on_train_epoch_end", save_hmd_loss_callback)
 
     # Train the model - handle ES suffix
     suffix = '_ES' if args.es else ''

@@ -354,16 +354,24 @@ class v8DetectionLoss:
             self.focal_loss = None
 
         # Read HMD loss settings from model.args if not provided
+        # IMPORTANT: This is where parameters are read, so model.args must be set correctly
         if use_hmd_loss is None:
             use_hmd_loss = getattr(h, 'use_hmd_loss', False)
         if hmd_loss_weight is None:
-            hmd_loss_weight = getattr(h, 'hmd_loss_weight', 0.1)
+            hmd_loss_weight = getattr(h, 'hmd_loss_weight', 0.5)  # Updated default from 0.1 to 0.5
         if hmd_penalty_single is None:
             hmd_penalty_single = getattr(h, 'hmd_penalty_single', 500.0)
         if hmd_penalty_none is None:
             hmd_penalty_none = getattr(h, 'hmd_penalty_none', 1000.0)
         if hmd_penalty_coeff is None:
             hmd_penalty_coeff = getattr(h, 'hmd_penalty_coeff', 0.5)
+        
+        # Debug logging to verify parameters are read correctly
+        if hasattr(h, 'use_hmd_loss') and getattr(h, 'use_hmd_loss', False):
+            LOGGER.info(f"v8DetectionLoss.__init__: Reading HMD loss parameters from model.args:")
+            LOGGER.info(f"   model.args.use_hmd_loss = {getattr(h, 'use_hmd_loss', 'NOT SET')}")
+            LOGGER.info(f"   model.args.hmd_loss_weight = {getattr(h, 'hmd_loss_weight', 'NOT SET')}")
+            LOGGER.info(f"   Final values: use_hmd_loss={use_hmd_loss}, hmd_loss_weight={hmd_loss_weight}")
         
         # Initialize HMD loss if enabled
         self.use_hmd_loss = use_hmd_loss
@@ -480,7 +488,7 @@ class v8DetectionLoss:
         # The _calculate_hmd_loss function will handle the penalty for no detections
         if self.use_hmd_loss:
             hmd_loss_value = self._calculate_hmd_loss(
-                pred_bboxes, pred_scores, target_bboxes, gt_labels, fg_mask, stride_tensor
+                pred_bboxes, pred_scores, target_bboxes, target_scores, fg_mask, stride_tensor
             )
             # Store HMD loss value for logging (last batch)
             hmd_loss_scalar = float(hmd_loss_value.detach().cpu().item())
@@ -540,7 +548,7 @@ class v8DetectionLoss:
         pred_bboxes: torch.Tensor,
         pred_scores: torch.Tensor,
         target_bboxes: torch.Tensor,
-        gt_labels: torch.Tensor,
+        target_scores: torch.Tensor,
         fg_mask: torch.Tensor,
         stride_tensor: torch.Tensor,
     ) -> torch.Tensor:
@@ -551,7 +559,7 @@ class v8DetectionLoss:
             pred_bboxes: Predicted boxes [batch, num_anchors, 4] in xyxy format (normalized)
             pred_scores: Predicted scores [batch, num_anchors, num_classes]
             target_bboxes: Target boxes [batch, num_anchors, 4] in xyxy format (normalized)
-            gt_labels: Target labels [batch, num_anchors, 1]
+            target_scores: Target scores [batch, num_anchors, num_classes] (from assigner, matches anchors)
             fg_mask: Foreground mask [batch, num_anchors]
             stride_tensor: Stride tensor for denormalization
         
@@ -599,7 +607,9 @@ class v8DetectionLoss:
                 pred_conf_max = pred_conf_fg.max(dim=1)[0]  # [num_fg]
                 
                 target_boxes_fg = target_bboxes_pixel[b][fg_mask_b]  # [num_fg, 4]
-                target_labels_fg = gt_labels[b][fg_mask_b].squeeze(-1).long()  # [num_fg]
+                # Use target_scores to get target labels (already matched to anchors by assigner)
+                target_scores_fg = target_scores[b][fg_mask_b]  # [num_fg, num_classes]
+                target_labels_fg = target_scores_fg.argmax(dim=1).long()  # [num_fg]
                 
                 pred_boxes_list.append(pred_boxes_fg)
                 pred_conf_list.append(pred_conf_max)
@@ -613,7 +623,14 @@ class v8DetectionLoss:
             for b in range(batch_size):
                 if len(pred_boxes_list[b]) == 0:
                     # No foreground: use penalty
-                    hmd_losses.append(torch.tensor(self.hmd_penalty_none, device=device))
+                    # CRITICAL: Make penalty depend on predictions to maintain gradient
+                    # penalty = base_penalty * (1.0 + max_conf) where max_conf depends on predictions
+                    # This ensures gradient flows through predictions while keeping penalty value reasonable
+                    max_conf = pred_conf[b].max() if pred_conf[b].numel() > 0 else torch.tensor(0.0, device=device)
+                    # Use max_conf to create gradient: penalty scales with confidence
+                    # Higher confidence but no detection = higher penalty (encourages detection)
+                    penalty = torch.tensor(self.hmd_penalty_none, device=device) * (1.0 + max_conf)
+                    hmd_losses.append(penalty)
                     continue
                 
                 # Call hmd_utils function (it expects batch format, so we create a batch of 1)
@@ -662,8 +679,14 @@ class v8DetectionLoss:
             
             if not fg_mask_b.any():
                 # No foreground, use maximum penalty
-                hmd_error = torch.tensor(self.hmd_penalty_none, device=device)
-                weight = torch.tensor(1.0, device=device)
+                # CRITICAL: Make penalty depend on predictions to maintain gradient
+                # penalty = base_penalty * (1.0 + max_conf) where max_conf depends on predictions
+                # This ensures gradient flows through predictions while keeping penalty value reasonable
+                max_conf = pred_conf[b].max() if pred_conf[b].numel() > 0 else torch.tensor(0.0, device=device)
+                # Use max_conf to create gradient: penalty scales with confidence
+                # Higher confidence but no detection = higher penalty (encourages detection)
+                hmd_error = torch.tensor(self.hmd_penalty_none, device=device) * (1.0 + max_conf)
+                weight = torch.tensor(1.0, device=device, requires_grad=False)
                 hmd_errors.append(hmd_error)
                 weights.append(weight)
                 continue
@@ -674,7 +697,9 @@ class v8DetectionLoss:
             pred_cls_fg = pred_conf_fg.argmax(dim=1)  # [num_fg]
             
             target_boxes_fg = target_bboxes_pixel[b][fg_mask_b]  # [num_fg, 4]
-            target_labels_fg = gt_labels[b][fg_mask_b].squeeze(-1).long()  # [num_fg]
+            # Use target_scores to get target labels (already matched to anchors by assigner)
+            target_scores_fg = target_scores[b][fg_mask_b]  # [num_fg, num_classes]
+            target_labels_fg = target_scores_fg.argmax(dim=1).long()  # [num_fg]
             
             # Find Mentum and Hyoid in predictions (use highest confidence)
             mentum_pred_mask = pred_cls_fg == self.mentum_class
@@ -724,6 +749,7 @@ class v8DetectionLoss:
                 
             elif (has_mentum_pred or has_hyoid_pred) and (has_mentum_target and has_hyoid_target):
                 # Single detected: use penalty
+                # CRITICAL: Use pred_bboxes to create penalty with gradient
                 if has_mentum_pred:
                     mentum_pred_indices = torch.where(mentum_pred_mask)[0]
                     mentum_conf = pred_conf_fg[mentum_pred_indices, self.mentum_class].max()
@@ -736,16 +762,27 @@ class v8DetectionLoss:
                 else:
                     hyoid_conf = torch.tensor(0.0, device=device)
                 
-                hmd_error = torch.tensor(self.hmd_penalty_single, device=device)
-                weight = torch.min(mentum_conf, hyoid_conf) * self.hmd_penalty_coeff
+                # Create penalty with gradient by making it depend on confidence
+                # This ensures the penalty contributes to backpropagation
+                # penalty = base_penalty * (1.0 + min_conf) where min_conf depends on predictions
+                # Higher confidence but missing one target = higher penalty (encourages detecting both)
+                min_conf = torch.min(mentum_conf, hyoid_conf)
+                hmd_error = torch.tensor(self.hmd_penalty_single, device=device) * (1.0 + min_conf)
+                weight = min_conf * self.hmd_penalty_coeff
                 
                 hmd_errors.append(hmd_error)
                 weights.append(weight)
                 
             else:
                 # None detected: use maximum penalty
-                hmd_error = torch.tensor(self.hmd_penalty_none, device=device)
-                weight = torch.tensor(1.0, device=device)
+                # CRITICAL: Make penalty depend on predictions to maintain gradient
+                # penalty = base_penalty * (1.0 + max_conf) where max_conf depends on predictions
+                # This ensures gradient flows through predictions while keeping penalty value reasonable
+                max_conf = pred_conf[b].max() if pred_conf[b].numel() > 0 else torch.tensor(0.0, device=device)
+                # Use max_conf to create gradient: penalty scales with confidence
+                # Higher confidence but no detection = higher penalty (encourages detection)
+                hmd_error = torch.tensor(self.hmd_penalty_none, device=device) * (1.0 + max_conf)
+                weight = torch.tensor(1.0, device=device, requires_grad=False)
                 
                 hmd_errors.append(hmd_error)
                 weights.append(weight)
