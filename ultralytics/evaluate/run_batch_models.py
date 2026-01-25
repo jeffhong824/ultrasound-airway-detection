@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 import csv, math, sys
 
-# ================= 你要比較的模型 =================
+# ================= Models to compare =================
 MODELS = [
     # --- det_123 ---
     # dict(case_ID="det_123", model_name="yolov8n", train_ID="20250630-211022"),
@@ -25,9 +25,9 @@ MODELS = [
     dict(case_ID="det_678", model_name="yolo12n", train_ID="20250702-030540"),
 ]
 
-# ================= 共用參數 =================
-BASE_DATA   = Path("../../yolo_dataset")              # <case>/v1/  下面要有 patient_data/ 與 subID_test.txt
-RUNS_DIR    = Path("../runs/train")                   # Ultralytics 預設訓練輸出
+# ================= Common parameters =================
+BASE_DATA   = Path("../../yolo_dataset")              # <case>/v1/  should have patient_data/ and subID_test.txt below
+RUNS_DIR    = Path("../runs/train")                   # Ultralytics default training output
 PRED_ROOT   = Path("../pred_video")                   # 所有推論結果集中存放處
 WEIGHTS_TM  = "{model_name}-{case_ID}-{train_ID}/weights/best.pt"
 
@@ -49,7 +49,7 @@ def to_float(x: str) -> float:
         return float("-inf")
 
 def best_threshold(csv_path: Path) -> float:
-    """讀 metrics_by_threshold.csv，依 mAP50→mAP50_95→macro_f1 取最佳閾值"""
+    """Read metrics_by_threshold.csv, select best threshold by mAP50→mAP50_95→macro_f1"""
     rows = []
     with open(csv_path, newline="") as f:
         for r in csv.DictReader(f):

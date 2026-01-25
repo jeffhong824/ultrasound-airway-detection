@@ -1,11 +1,11 @@
 """
-box輸出格式:
-使用model.val輸出xywh結果(save_json=True)
-如果是預測patient整個video一樣使用model.predict輸出
+Box output format:
+Use model.val to output xywh results (save_json=True)
+If predicting entire patient video, use model.predict output
 
-mask輸出格式:
-使用model.predict並整理過, 輸出xy結果
-json格式轉pandas.DataFrame輸出, columns如下(segment模型才會輸出pts):
+Mask output format:
+Use model.predict and organize, output xy results
+Convert json format to pandas.DataFrame output, columns as follows (segment models only output pts):
 {
     'image_id': int,
     'category_id': int,
@@ -148,7 +148,7 @@ if __name__=='__main__':
     parser.add_argument('--weights', type=str, default=None, help='Path to model weights file (overrides runs_type/runs_num/model)')
     parser.add_argument('--output-name', type=str, default=None, help='Output folder name (e.g., "test_exp1" instead of "test2")')
     args = parser.parse_args()
-    # args = parser.parse_args('segment 1 seg_45 --subID all'.split()) # TODO: debug完要修掉
+    # args = parser.parse_args('segment 1 seg_45 --subID all'.split()) # TODO: Remove after debugging
     
     # Handle runs_num: convert to empty string if '1' or empty, otherwise keep as string
     if args.runs_num is None or args.runs_num == '' or args.runs_num == '1':
@@ -239,13 +239,13 @@ if __name__=='__main__':
                     'cls': result.boxes.cls.int().tolist(),
                     'conf': result.boxes.conf.tolist(),
                 }
-                gp = pd.DataFrame(data).groupby('cls')['conf'].idxmax() # 找出每個class confidence最高的index
+                gp = pd.DataFrame(data).groupby('cls')['conf'].idxmax() # Find index with highest confidence for each class
                 if is_det: # detection task
                     for c in gp.index:
                         output.append({
                             'image_id': os.path.splitext(os.path.basename(result.path))[0],
                             'category_id': c,
-                            'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh實際上是cx cy w h，不好用
+                            'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh is actually cx cy w h, not convenient to use
                             'score': result.boxes[gp[c]].conf.item(),
                         })
                 else: # should be segmentation task
@@ -253,7 +253,7 @@ if __name__=='__main__':
                         output.append({
                             'image_id': os.path.splitext(os.path.basename(result.path))[0],
                             'category_id': c,
-                            'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh實際上是cx cy w h，不好用
+                            'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh is actually cx cy w h, not convenient to use
                             'score': result.boxes[gp[c]].conf.item(),
                             'pts': result.masks[gp[c]].xy[0].tolist(),
                         })
@@ -283,12 +283,12 @@ if __name__=='__main__':
         #                 'cls': result.boxes.cls.int().tolist(),
         #                 'conf': result.boxes.conf.tolist(),
         #             }
-        #             gp = pd.DataFrame(data).groupby('cls')['conf'].idxmax() # 找出每個class confidence最高的index
+        #             gp = pd.DataFrame(data).groupby('cls')['conf'].idxmax() # Find index with highest confidence for each class
         #             for c in gp.index:
         #                 output.append({
         #                     'image_id': os.path.splitext(os.path.basename(result.path))[0],
         #                     'category_id': c,
-        #                     'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh實際上是cx cy w h，不好用
+        #                     'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh is actually cx cy w h, not convenient to use
         #                     'score': result.boxes[gp[c]].conf.item(),
         #                     'pts': result.masks[gp[c]].xy[0].tolist(),
         #                 })
@@ -356,14 +356,14 @@ if __name__=='__main__':
                             'cls': result.boxes.cls.int().tolist(),
                             'conf': result.boxes.conf.tolist(),
                         }
-                        gp = pd.DataFrame(data).groupby('cls')['conf'].idxmax() # 找出每個class confidence最高的index
+                        gp = pd.DataFrame(data).groupby('cls')['conf'].idxmax() # Find index with highest confidence for each class
                         if is_det: # detection task
                             for c in gp.index:
                                 xyxy = result.boxes[gp[c]].xyxy[0].tolist()
                                 output.append({
                                     'image_id': batch_idx[b] + i,
                                     'category_id': c,
-                                    'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh實際上是cx cy w h，不好用
+                                    'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh is actually cx cy w h, not convenient to use
                                     'score': result.boxes[gp[c]].conf.item(),
                                 })
                         else: # should be segmentation task
@@ -372,7 +372,7 @@ if __name__=='__main__':
                                 output.append({
                                     'image_id': batch_idx[b] + i,
                                     'category_id': c,
-                                    'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh實際上是cx cy w h，不好用
+                                    'bbox': result.boxes[gp[c]].xyxy[0].tolist(), # xywh is actually cx cy w h, not convenient to use
                                     'score': result.boxes[gp[c]].conf.item(),
                                     'pts': result.masks[gp[c]].xy[0].tolist(),
                                 })

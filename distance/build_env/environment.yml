@@ -1,0 +1,28 @@
+name: portable
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python<3.12
+  - numpy<2.0.0
+  - pyyaml
+  - opencv
+  - pandas
+  - scikit-learn
+  - openpyxl
+  - pydicom
+  - tqdm
+  - jupyterlab
+  - matplotlib
+  - fortran-compiler
+  - future
+  - tinydb
+  - xlrd
+  - statsmodels
+  - pingouin
+  - imageio
+  - pip
+  - pip:
+    - python-gdcm
+    - pylibjpeg-libjpeg
+    - cvat_sdk

@@ -2,9 +2,9 @@
 """
 evaluate_model_thresholds.py
 
-單一模型：一次以 conf=0.0 做推論，離線掃描 thresholds（0.0 ~ 1.0），
-可選是否只保留每個 class confidence 最高的 box。
-輸出 Macro/Micro（P/R/F1）與 mAP50 / mAP50_95。
+Single model: Run inference once with conf=0.0, then scan thresholds (0.0 ~ 1.0) offline.
+Optionally keep only the box with highest confidence for each class.
+Output Macro/Micro (P/R/F1) and mAP50 / mAP50_95.
 """
 
 import argparse
@@ -38,15 +38,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--thr-step",  type=float, default=0.01)
 
     p.add_argument("--keep-max-per-class", action="store_true", default=True,
-                   help="是否保留每張圖中每類別最大信心值的框（可與 top1-per-class 二選一）")
+                   help="Whether to keep the box with maximum confidence for each class in each image (can choose one with top1-per-class)")
     p.add_argument("--top1-per-class", action="store_true", default=False,
-                   help="只保留每張圖每類別 confidence 最高的框")
+                   help="Keep only the box with highest confidence for each class in each image")
     p.add_argument("--out-root", type=Path, default=Path("../pred_video"))
 
     return p.parse_args()
 
 def main():
-    print("📌 開始執行 evaluate_model_thresholds.py")
+    print("📌 Starting evaluate_model_thresholds.py")
     warnings.filterwarnings("ignore")
     opt = parse_args()
     print(f"🔧 輸入參數: case={opt.case_id}, model={opt.model_name}, train_id={opt.train_id}")
@@ -54,7 +54,7 @@ def main():
     print(f"🔧 資料來源路徑: {opt.root.resolve()}")
     print(f"🔍 使用 Top-1 per Class 模式: {opt.top1_per_class}")
 
-    # 驗證 weights 路徑存在
+    # Verify weights path exists
     assert opt.weights.exists(), f"❌ 找不到模型權重檔案: {opt.weights}"
     assert (opt.root / "subID_test.txt").exists(), f"❌ 找不到 subID_test.txt：{opt.root/'subID_test.txt'}"
 
@@ -73,7 +73,7 @@ def main():
     patient_ids = [ln.strip() for ln in id_txt.read_text().splitlines() if ln.strip()]
     print(f"🧪 測試病患數量: {len(patient_ids)}")
 
-    # 載入模型
+    # Load model
     print("🧠 載入模型中 ...")
     model = YOLO(str(opt.weights)).to(opt.device)
     print("✅ 模型載入完成")
@@ -157,7 +157,7 @@ def main():
                     scores_f = np.array(filtered_scores)
                     classes_f = np.array(filtered_classes)
 
-                # ★ 原本邏輯（若非 top1 時才執行）
+                # ★ Original logic (only execute if not top1)
                 if opt.keep_max_per_class and not opt.top1_per_class and len(boxes) > 0:
                     boxes, classes_f, scores_f = keep_max_per_class(boxes, classes_f, scores_f)
 

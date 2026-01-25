@@ -1480,6 +1480,85 @@ class RandomHSV:
         return labels
 
 
+class UltrasoundAugmentation(BaseTransform):
+    """
+    Ultrasound-specific augmentation: Speckle noise and signal attenuation.
+    
+    This class applies two ultrasound-specific augmentations:
+    1. Speckle Noise: Adds multiplicative noise typical of ultrasound imaging
+    2. Signal Attenuation: Simulates depth-dependent signal attenuation
+    
+    Attributes:
+        speckle_var (float): Variance for speckle noise (default: 0.1)
+        attenuation_factor (float): Attenuation factor for depth simulation (default: 0.3)
+        p (float): Probability of applying augmentation (default: 1.0)
+    
+    Methods:
+        apply_image: Apply ultrasound augmentations to the image.
+        __call__: Apply augmentations to labels.
+    
+    Examples:
+        >>> aug = UltrasoundAugmentation(speckle_var=0.1, attenuation_factor=0.3)
+        >>> labels = {"img": np.array(...), "instances": [...]}
+        >>> augmented_labels = aug(labels)
+    """
+    
+    def __init__(self, speckle_var: float = 0.1, attenuation_factor: float = 0.3, p: float = 1.0):
+        """
+        Initialize UltrasoundAugmentation.
+        
+        Args:
+            speckle_var (float): Variance for speckle noise (default: 0.1)
+            attenuation_factor (float): Attenuation factor for depth simulation (default: 0.3)
+            p (float): Probability of applying augmentation (default: 1.0)
+        """
+        super().__init__()
+        self.speckle_var = speckle_var
+        self.attenuation_factor = attenuation_factor
+        self.p = p
+    
+    def apply_image(self, labels):
+        """Apply ultrasound augmentations to the image."""
+        if random.random() > self.p:
+            return labels
+        
+        img = labels.get("img")
+        if img is None:
+            return labels
+        
+        # Ultralytics uses uint8 images (0-255) in BGR format
+        # Convert to float for processing
+        img_float = img.astype(np.float32) / 255.0
+        
+        # Apply speckle noise (multiplicative noise)
+        # Speckle noise: I_noisy = I + I * N(0, var)
+        if self.speckle_var > 0:
+            noise = np.random.randn(*img_float.shape).astype(np.float32) * self.speckle_var
+            img_float = img_float + img_float * noise
+        
+        # Apply signal attenuation (depth-dependent, stronger at bottom)
+        # Attenuation: stronger signal loss at deeper depths (bottom of image)
+        if self.attenuation_factor > 0:
+            h, w = img_float.shape[:2]
+            # Create attenuation mask: Top (shallow) = 1.0, Bottom (deep) = 1.0 - factor
+            attenuation = np.linspace(1.0, 1.0 - self.attenuation_factor, h, dtype=np.float32)
+            if len(img_float.shape) == 3:
+                attenuation = attenuation[:, np.newaxis, np.newaxis]
+            else:
+                attenuation = attenuation[:, np.newaxis]
+            img_float = img_float * attenuation
+        
+        # Clip to valid range [0, 1] and convert back to uint8
+        img_float = np.clip(img_float, 0.0, 1.0)
+        labels["img"] = (img_float * 255.0).astype(np.uint8)
+        
+        return labels
+    
+    def __call__(self, labels):
+        """Apply ultrasound augmentations to labels."""
+        return self.apply_image(labels)
+
+
 class RandomFlip:
     """
     Apply a random horizontal or vertical flip to an image with a given probability.
@@ -2539,17 +2618,28 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         elif flip_idx and (len(flip_idx) != kpt_shape[0]):
             raise ValueError(f"data.yaml flip_idx={flip_idx} length must be equal to kpt_shape[0]={kpt_shape[0]}")
 
-    return Compose(
-        [
-            pre_transform,
-            MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
-            CutMix(dataset, pre_transform=pre_transform, p=hyp.cutmix),
-            Albumentations(p=1.0),
-            RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
-            RandomFlip(direction="vertical", p=hyp.flipud, flip_idx=flip_idx),
-            RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
-        ]
-    )  # transforms
+    transforms_list = [
+        pre_transform,
+        MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
+        CutMix(dataset, pre_transform=pre_transform, p=hyp.cutmix),
+        Albumentations(p=1.0),
+        RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
+        RandomFlip(direction="vertical", p=hyp.flipud, flip_idx=flip_idx),
+        RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
+    ]
+    
+    # Add ultrasound-specific augmentation if enabled
+    if hasattr(hyp, 'use_ultrasound_aug') and getattr(hyp, 'use_ultrasound_aug', False):
+        speckle_var = getattr(hyp, 'ultrasound_speckle_var', 0.1)
+        attenuation_factor = getattr(hyp, 'ultrasound_attenuation_factor', 0.3)
+        # Insert after HSV augmentation, before flips
+        transforms_list.insert(-2, UltrasoundAugmentation(
+            speckle_var=speckle_var,
+            attenuation_factor=attenuation_factor,
+            p=1.0
+        ))
+    
+    return Compose(transforms_list)  # transforms
 
 
 # Classification augmentations -----------------------------------------------------------------------------------------

@@ -51,7 +51,7 @@ def main():
         for r in reader:
             rows.append(r)
 
-    # 排序：mAP50 desc -> mAP50_95 desc -> macro_f1 desc
+    # Sort: mAP50 desc -> mAP50_95 desc -> macro_f1 desc
     rows.sort(key=lambda r: (
         to_float(r.get("mAP50", "-inf")),
         to_float(r.get("mAP50_95", "-inf")),
@@ -66,7 +66,7 @@ def main():
     if opt.dry_run:
         return
 
-    # 呼叫 materialize_full_outputs.py
+    # Call materialize_full_outputs.py
     cmd = [
         "python", "materialize_full_outputs.py",
         "--case-id", opt.case_id,

@@ -24,7 +24,7 @@ def to_float(v) -> float:
         return float("nan")
 
 def sort_key(row: Dict[str, Any]) -> Tuple:
-    """定義排序邏輯：高分在前"""
+    """Define sorting logic: higher scores first"""
     return tuple(-to_float(row.get(metric, "nan")) for metric in TARGET_METRICS)
 
 def main():
@@ -33,7 +33,7 @@ def main():
         print(f"No metrics_by_threshold.csv under {PRED_ROOT}")
         return
 
-    # Step 1: 合併所有 metrics_by_threshold.csv
+    # Step 1: Merge all metrics_by_threshold.csv
     combined_rows = []
     for fp in files:
         rows = read_csv(fp)
@@ -47,7 +47,7 @@ def main():
             r["train_ID"] = r.get("train_ID", train_ID)
             combined_rows.append(r)
 
-    # Step 2: 儲存合併檔案
+    # Step 2: Save merged file
     out_dir = PRED_ROOT / "aggregate"
     out_dir.mkdir(parents=True, exist_ok=True)
     combined_csv = out_dir / "combined_metrics.csv"
@@ -56,7 +56,7 @@ def main():
         writer.writeheader()
         writer.writerows(combined_rows)
 
-    # Step 3: 以 model 為單位找最佳 threshold
+    # Step 3: Find best threshold per model
     model_groups = defaultdict(list)
     for r in combined_rows:
         key = (r["case_ID"], r["model_name"], r["train_ID"])
@@ -67,17 +67,17 @@ def main():
         best_row = sorted(rows, key=sort_key)[0]
         best_per_model.append(best_row)
 
-    # Step 4: 排序所有模型
+    # Step 4: Sort all models
     best_per_model_sorted = sorted(best_per_model, key=sort_key)
 
-    # Step 5: 儲存 best_by_metric.csv
+    # Step 5: Save best_by_metric.csv
     best_csv = out_dir / "best_by_metric.csv"
     with open(best_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=best_per_model_sorted[0].keys())
         writer.writeheader()
         writer.writerows(best_per_model_sorted)
 
-    # Step 6: 儲存 topk_by_metric.csv
+    # Step 6: Save topk_by_metric.csv
     topk_csv = out_dir / "topk_by_metric.csv"
     with open(topk_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["rank"] + list(best_per_model_sorted[0].keys()))

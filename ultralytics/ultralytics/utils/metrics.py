@@ -80,6 +80,8 @@ def bbox_iou(
     GIoU: bool = False,
     DIoU: bool = False,
     CIoU: bool = False,
+    EIoU: bool = False,
+    SIoU: bool = False,
     eps: float = 1e-7,
 ) -> torch.Tensor:
     """
@@ -125,10 +127,48 @@ def bbox_iou(
 
     # IoU
     iou = inter / union
-    if CIoU or DIoU or GIoU:
+    if SIoU or EIoU or CIoU or DIoU or GIoU:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+        if SIoU:  # SIoU Loss: https://arxiv.org/abs/2205.12740
+            # Calculate angle cost
+            sigma = torch.pow((b2_x1 + b2_x2 - b1_x1 - b1_x2) / 2, 2) + torch.pow((b2_y1 + b2_y2 - b1_y1 - b1_y2) / 2, 2)
+            ch_sigma = ch.pow(2) + eps
+            sin_alpha = torch.abs((b2_x1 + b2_x2 - b1_x1 - b1_x2) / 2) / torch.sqrt(sigma + eps)
+            sin_beta = torch.abs((b2_y1 + b2_y2 - b1_y1 - b1_y2) / 2) / torch.sqrt(sigma + eps)
+            sin_alpha = torch.clamp(sin_alpha, min=0, max=1)
+            sin_beta = torch.clamp(sin_beta, min=0, max=1)
+            alpha = torch.asin(sin_alpha)
+            beta = torch.asin(sin_beta)
+            
+            # Angle cost
+            angle_cost = 1 - 2 * torch.sin(torch.abs(alpha - beta) - math.pi / 4).pow(2)
+            
+            # Distance cost
+            rho_x = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) / cw).pow(2)
+            rho_y = ((b2_y1 + b2_y2 - b1_y1 - b1_y2) / ch).pow(2)
+            gamma = 2 - angle_cost
+            distance_cost = 2 - torch.exp(gamma * rho_x) - torch.exp(gamma * rho_y)
+            
+            # Shape cost
+            omega_w = torch.abs(w1 - w2) / torch.max(w1, w2)
+            omega_h = torch.abs(h1 - h2) / torch.max(h1, h2)
+            shape_cost = torch.pow(1 - torch.exp(-omega_w), 4) + torch.pow(1 - torch.exp(-omega_h), 4)
+            
+            # SIoU = IoU - (angle_cost + distance_cost + shape_cost) / 2
+            return iou - 0.5 * (angle_cost + distance_cost + shape_cost)
+        elif EIoU:  # EIoU Loss: https://arxiv.org/abs/2101.08158
+            c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
+            rho2 = (
+                (b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)
+            ) / 4  # center dist**2
+            # EIoU directly optimizes width and height differences
+            w_diff = (w1 - w2).pow(2)
+            h_diff = (h1 - h2).pow(2)
+            cw2 = cw.pow(2) + eps
+            ch2 = ch.pow(2) + eps
+            return iou - (rho2 / c2 + w_diff / cw2 + h_diff / ch2)
+        elif CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
             c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
             rho2 = (
                 (b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)

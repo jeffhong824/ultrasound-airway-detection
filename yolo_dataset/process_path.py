@@ -24,7 +24,7 @@ old_prefix = "/root/ultrasound/DifficultAirway/"
 new_prefix = str(Path(PROJECT_ROOT).resolve()) + "/"  # Use PROJECT_ROOT from .env / 使用 .env 中的 PROJECT_ROOT
 
 # 可處理的檔案列表
-split_files = ["train.txt", "val.txt", "test.txt"]
+split_files = ["train.txt", "val.txt", "test.txt", "train_ES.txt", "val_ES.txt", "test_ES.txt"]
 
 for split in split_files:
     file_path = dataset_dir / split

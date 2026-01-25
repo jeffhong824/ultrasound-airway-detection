@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 common_eval.py
-共用工具：類別名稱、幾何、TP/FP/FN 配對、Macro/Micro 指標、AP/mAP、繪圖等。
+Common utilities: class names, geometry, TP/FP/FN matching, Macro/Micro metrics, AP/mAP, plotting, etc.
 """
 
 from pathlib import Path
@@ -32,7 +32,7 @@ def iou_xyxy(boxA, boxB) -> float:
     return float(inter / (boxAA + boxBA - inter + 1e-16))
 
 def keep_max_per_class(boxes: np.ndarray, classes: np.ndarray, scores: np.ndarray):
-    """每張影像每個類別僅保留最高分框。"""
+    """Keep only the highest score box for each class in each image."""
     max_dict = {}
     for b, c, s in zip(boxes, classes, scores):
         c = int(c)
@@ -44,7 +44,7 @@ def keep_max_per_class(boxes: np.ndarray, classes: np.ndarray, scores: np.ndarra
     return np.array(B), np.array(C), np.array(S)
 
 def keep_max_mask_per_class(masks: np.ndarray, classes: np.ndarray, scores: np.ndarray, image_shape):
-    """Segmentation 版本：每類保留最高分 mask。"""
+    """Segmentation version: Keep highest score mask for each class."""
     max_dict = {}
     for i, (c, s) in enumerate(zip(classes, scores)):
         c = int(c)
@@ -221,7 +221,7 @@ def update_confusion(conf_mat: np.ndarray,
             conf_mat[int(gcl), BG] += 1  # FN
 
 def stats_from_confusion(conf_mat: np.ndarray, K: int) -> Dict[str, Any]:
-    """由 (K+1)x(K+1) 混淆矩陣推導 per-class 與 macro/micro 指標。"""
+    """Derive per-class and macro/micro metrics from (K+1)x(K+1) confusion matrix."""
     BG = K
     N_eval = int(conf_mat.sum())
 

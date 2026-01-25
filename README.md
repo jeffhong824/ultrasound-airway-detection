@@ -30,22 +30,56 @@ pip install -e .
 #### 實驗設計 / Experiment Design
 
 **重要提示 / Important Note**: 
-為了確保實驗結果的可比較性，不同硬件配置（RTX 4070 和 H200）使用**不同的 project 名稱**，避免因 batch size 差異導致的訓練動態不同影響比較。
+為了確保實驗結果的可比較性，不同硬件配置（RTX 4090 和 H200）使用**不同的 project 名稱**，避免因 batch size 差異導致的訓練動態不同影響比較。
 
 **Project 命名規則 / Project Naming Convention**:
-- RTX 4070 (batch=16): `ultrasound-det_123_ES-v3-4090`
+- RTX 4090 (batch=16): `ultrasound-det_123_ES-v3-4090`
 - H200 (batch=256): `ultrasound-det_123_ES-v3-h200`
 
 **實驗規劃 / Experiment Plan**:
 
-每個 project 包含以下 6 個實驗，所有實驗均使用 `--seed 42` 確保可重現性：
+每個 project 包含以下實驗，所有實驗均使用 `--seed 42` 確保可重現性：
 
-- **exp0 baseline**: 基準實驗，使用所有默認參數，作為對照組
-- **exp1 data_aug**: 相對於 exp0，優化 Data Augmentation 參數（針對小物件）
+**基礎實驗（每個實驗都有兩個版本）**：
+- **exp0 baseline**: 基準實驗，使用所有默認參數，作為對照組（**注意**：即使未啟用 HMD Loss，也會自動計算 HMD 評估指標）
+  - **exp0 baseline**: 原始版本
+  - **exp0 baseline+keep_top_conf_per_class**: 使用 `--keep_top_conf_per_class --conf_low 0.1` 參數（提高 HMD Detection_Rate）
+- **exp1-1 data_aug**: 相對於 exp0，優化 Data Augmentation 參數（針對小物件）
+  - **exp1-1 data_aug**: 原始版本
+  - **exp1-1 data_aug+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp1-2 ultrasound_aug**: 相對於 exp0，啟用超音波專用數據增強（斑點雜訊、深度衰減）
+  - **exp1-2 ultrasound_aug**: 原始版本
+  - **exp1-2 ultrasound_aug+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
 - **exp2 loss_weights**: 相對於 exp0，調整 Loss 權重參數（定位優先）
+  - **exp2 loss_weights**: 原始版本
+  - **exp2 loss_weights+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
 - **exp3 focal_loss**: 相對於 exp0，啟用 Focal Loss（處理類別不平衡）
+  - **exp3 focal_loss**: 原始版本
+  - **exp3 focal_loss+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
 - **exp4 dim_weights**: 相對於 exp0，啟用水平方向維度權重（HMD 優化）
-- **exp5 hmd_loss**: 相對於 exp0，啟用 HMD Loss（HMD 距離優化）
+  - **exp4 dim_weights**: 原始版本
+  - **exp4 dim_weights+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp5-1 hmd_loss_pixel**: 相對於 exp0，啟用 HMD Loss（像素級別）
+  - **exp5-1 hmd_loss_pixel**: 原始版本
+  - **exp5-1 hmd_loss_pixel+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp5-2 hmd_loss_mm**: 相對於 exp0，啟用 HMD Loss（毫米級別，使用真實尺寸）
+  - **exp5-2 hmd_loss_mm**: 原始版本
+  - **exp5-2 hmd_loss_mm+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp6-1 warmup_optimized**: 相對於 exp0，優化 Warmup 參數（針對超音波小物件）
+  - **exp6-1 warmup_optimized**: 原始版本
+  - **exp6-1 warmup_optimized+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp6-2 warmup_cosine_restart**: 相對於 exp0，使用 Cosine Annealing with Warm Restarts 學習率調度
+  - **exp6-2 warmup_cosine_restart**: 原始版本
+  - **exp6-2 warmup_cosine_restart+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp7-1 siou**: 相對於 exp0，使用 SIoU Loss（對角度敏感，適合細長目標）
+  - **exp7-1 siou**: 原始版本
+  - **exp7-1 siou+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp7-2 eiou**: 相對於 exp0，使用 EIoU Loss（直接優化長寬邊長，適合細長目標）
+  - **exp7-2 eiou**: 原始版本
+  - **exp7-2 eiou+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
+- **exp7-3 diou**: 相對於 exp0，使用 DIoU Loss（考慮中心點距離，對 HMD 計算有幫助）
+  - **exp7-3 diou**: 原始版本
+  - **exp7-3 diou+keep_top_conf_per_class**: 帶 `--keep_top_conf_per_class --conf_low 0.1` 參數
 
 ##### exp0 baseline 默認參數說明
 
@@ -61,14 +95,33 @@ pip install -e .
 - `--hsv_s`: 0.7
 - `--hsv_v`: 0.4
 
+**Warmup 參數**（默認值）：
+- `--warmup_epochs`: 3.0
+- `--warmup_momentum`: 0.8
+- `--warmup_bias_lr`: 0.1
+
+**學習率調度**（默認值）：
+- `--cos_lr`: False（使用線性衰減）
+- `--lr0`: 0.01（初始學習率）
+- `--lrf`: 0.01（最終學習率）
+- `--use_cosine_restart`: False（未啟用 Cosine Restart）
+- `--cosine_restart_t0`: 10（第一個週期 epoch 數，僅當 `--use_cosine_restart` 啟用時有效）
+- `--cosine_restart_t_mult`: 2（週期倍增因子，僅當 `--use_cosine_restart` 啟用時有效）
+
 **其他參數**（默認值）：
 - `--use_focal_loss`: False（未啟用）
 - `--use_dim_weights`: False（未啟用）
 - `--use_hmd_loss`: False（未啟用）
 
-#### RTX 4070 配置 (Single GPU / 單 GPU)
+#### RTX 4090 配置 (Single GPU / 單 GPU)
 
 **exp0 baseline: 基準實驗（所有默認參數）**
+
+**注意**：
+- 即使未啟用 HMD Loss（`--use_hmd_loss=False`），所有 `det_123` 資料庫的實驗（包括 baseline）都會自動計算 HMD 評估指標（Detection_Rate、RMSE_HMD、Overall_Score），以便監控和比較所有實驗的 HMD 性能。
+- 如果 Detection_Rate 為 0，可能是 confidence 閾值過高導致預測被過濾。可以嘗試：
+  - 降低 `--conf` 參數（例如從 0.25 降到 0.1）
+  - 或使用 `--keep_top_conf_per_class` 參數：使用較低的 confidence 閾值進行初始過濾，但每個類別只保留 confidence 最高的 bbox（適合 HMD 計算，因為每個類別應該只有一個檢測）
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
@@ -83,7 +136,24 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --exp_name="exp0 baseline"
 ```
 
-**exp1 data_aug: Data Augmentation 優化（針對小物件）**
+**exp0 baseline+keep_top_conf_per_class: 基準實驗（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp0 baseline+keep_top_conf_per_class" \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
+```
+
+**exp1-1 data_aug: Data Augmentation 優化（針對小物件）**
 
 相對於 exp0 的改動：
 - `--scale`: 0.5 → **0.7**（增加尺寸多樣性，讓小目標在縮放後仍可被模型辨識）
@@ -102,12 +172,34 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-4090" \
-  --exp_name="exp1 data_aug" \
+  --exp_name="exp1-1 data_aug" \
   --scale 0.7 \
   --translate 0.15 \
   --hsv_s 0.8 \
   --hsv_v 0.5 \
   --hsv_h 0.0
+```
+
+**exp1-1 data_aug+keep_top_conf_per_class: Data Augmentation 優化（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp1-1 data_aug+keep_top_conf_per_class" \
+  --scale 0.7 \
+  --translate 0.15 \
+  --hsv_s 0.8 \
+  --hsv_v 0.5 \
+  --hsv_h 0.0 \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
 ```
 
 **exp2 loss_weights: Loss 權重調整（定位優先）**
@@ -133,6 +225,26 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --cls 0.6
 ```
 
+**exp2 loss_weights+keep_top_conf_per_class: Loss 權重調整（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp2 loss_weights+keep_top_conf_per_class" \
+  --box 8.5 \
+  --dfl 2.0 \
+  --cls 0.6 \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
+```
+
 **exp3 focal_loss: Focal Loss（處理類別不平衡）**
 
 相對於 exp0 的改動：
@@ -156,6 +268,26 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --focal_alpha 0.25
 ```
 
+**exp3 focal_loss+keep_top_conf_per_class: Focal Loss（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp3 focal_loss+keep_top_conf_per_class" \
+  --use_focal_loss \
+  --focal_gamma 1.5 \
+  --focal_alpha 0.25 \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
+```
+
 **exp4 dim_weights: 水平方向維度權重（HMD 優化）**
 
 相對於 exp0 的改動：
@@ -177,14 +309,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --dim_weights 5.0 1.0 5.0 1.0
 ```
 
-**exp5 hmd_loss: HMD Loss（HMD 距離優化）**
-
-相對於 exp0 的改動：
-- `--use_hmd_loss`: False → **True**（啟用 HMD Loss）
-- `--hmd_loss_weight`: **0.5**（HMD loss 的權重係數）
-- `--hmd_penalty_single`: **500.0**（只檢測到一個目標時的懲罰值，像素）
-- `--hmd_penalty_none`: **1000.0**（兩個目標都漏檢時的懲罰值，像素）
-- `--hmd_penalty_coeff`: **0.5**（單個檢測時的權重係數）
+**exp4 dim_weights+keep_top_conf_per_class: 水平方向維度權重（帶 keep_top_conf_per_class 參數）**
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
@@ -196,12 +321,188 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-4090" \
-  --exp_name="exp5 hmd_loss" \
+  --exp_name="exp4 dim_weights+keep_top_conf_per_class" \
+  --use_dim_weights \
+  --dim_weights 5.0 1.0 5.0 1.0 \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
+```
+
+**exp1-2 ultrasound_aug: 超音波專用數據增強**
+
+相對於 exp0 的改動：
+- `--use_ultrasound_aug`: False → **True**（啟用超音波專用數據增強）
+- `--ultrasound_speckle_var`: **0.1**（斑點雜訊變異數）
+- `--ultrasound_attenuation_factor`: **0.3**（深度信號衰減因子）
+
+**設計理念**：
+- **斑點雜訊（Speckle Noise）**：超音波影像的固有特性，由聲波干涉產生，會降低影像解析度和對比度
+- **深度信號衰減（Signal Attenuation）**：模擬超音波在組織中傳播時的深度相關衰減，底部（深層）信號較弱
+- 這兩種增強技術模擬真實超音波影像的物理特性，提高模型對實際臨床環境的適應性
+
+**參考文獻**：
+1. **Despeckling of Medical Ultrasound Images** (Michailovich & Tannenbaum, 2006)
+   - 概述：研究超音波影像中斑點雜訊的統計特性，提出使用乘性模型描述斑點雜訊的形成過程。論文分析了對數轉換後斑點雜訊的特性，並評估了多種非線性濾波器（小波去噪、總變分濾波、各向異性擴散）在去斑點處理中的性能。研究指出，斑點雜訊會降低影像對比度、模糊細節，從而影響診斷價值。
+   - 連結：https://pmc.ncbi.nlm.nih.gov/articles/PMC3639001/
+   - 關鍵發現：斑點雜訊是超音波影像的固有特性，通過乘性模型可以更好地描述其統計特性；適當的預處理可以將對數轉換後的雜訊轉換為接近白高斯雜訊，從而提高濾波效果。
+
+2. **Speckle Noise Reduction in Ultrasound Images** (Rajabi et al., ISPRS)
+   - 概述：評估多種斑點雜訊去除濾波器在超音波影像上的效果與性能。研究比較了不同濾波方法的優缺點，為超音波影像處理提供了實用的參考。
+   - 連結：https://www.isprs.org/proceedings/xxxvi/1-W41/makaleler/Rajabi_Specle_Noise.pdf
+   - 關鍵發現：不同濾波方法對超音波影像的處理效果各有優劣，需要根據具體應用場景選擇合適的方法。
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp1-2 ultrasound_aug" \
+  --use_ultrasound_aug \
+  --ultrasound_speckle_var 0.1 \
+  --ultrasound_attenuation_factor 0.3
+```
+
+**exp5-1 hmd_loss_pixel: HMD Loss（像素級別）**
+
+相對於 exp0 的改動：
+- `--use_hmd_loss`: False → **True**（啟用 HMD Loss）
+- `--hmd_loss_weight`: **0.5**（HMD loss 的權重係數）
+- `--hmd_penalty_coeff`: **0.5**（單個檢測時的權重係數）
+
+**注意**：`--hmd_penalty_single` 和 `--hmd_penalty_none` 會根據 `--imgsz` 自動計算（預設 `imgsz=640`）：
+- `penalty_none = imgsz`（預設 640.0 像素）
+- `penalty_single = imgsz / 2`（預設 320.0 像素）
+- 如需自訂，可明確指定這些參數
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp5-1 hmd_loss_pixel" \
   --use_hmd_loss \
   --hmd_loss_weight 0.5 \
-  --hmd_penalty_single 500.0 \
-  --hmd_penalty_none 1000.0 \
   --hmd_penalty_coeff 0.5
+```
+
+**exp5-2 hmd_loss_mm: HMD Loss（毫米級別，真實尺寸）**
+
+相對於 exp0 的改動：
+- `--use_hmd_loss`: False → **True**（啟用 HMD Loss）
+- `--hmd_use_mm`: False → **True**（使用毫米而非像素）
+- `--hmd_loss_weight`: **0.5**（HMD loss 的權重係數）
+- `--hmd_penalty_coeff`: **0.5**（單個檢測時的權重係數）
+
+**注意**：
+- `--hmd_penalty_single` 和 `--hmd_penalty_none` 會根據 `--imgsz` 自動計算（預設 `imgsz=640`）：
+  - `penalty_none = imgsz`（預設 640.0 像素）
+  - `penalty_single = imgsz / 2`（預設 320.0 像素）
+- 使用 mm 模式時，penalty 值會自動轉換為毫米（根據每個圖像的 PixelSpacing）
+- 如需自訂 penalty 值（像素），可明確指定 `--hmd_penalty_single` 和 `--hmd_penalty_none`
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp5-2 hmd_loss_mm" \
+  --use_hmd_loss \
+  --hmd_use_mm \
+  --hmd_loss_weight 0.5 \
+  --hmd_penalty_coeff 0.5
+```
+
+**exp6-1 warmup_optimized: Warmup 參數優化（針對超音波小物件）**
+
+相對於 exp0 的改動：
+- `--warmup_epochs`: 3.0 → **5.0**（增加 warmup 週期，讓模型更穩定地適應超音波數據）
+- `--warmup_momentum`: 0.8 → **0.9**（提高初始 momentum，加速收斂）
+- `--warmup_bias_lr`: 0.1 → **0.05**（降低 bias 初始學習率，避免過度調整）
+
+**設計理念**：
+- 超音波影像具有高噪音特性，需要更長的 warmup 週期讓模型適應
+- 小物件檢測需要更穩定的訓練初期，避免梯度爆炸
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp6-1 warmup_optimized" \
+  --warmup_epochs 5.0 \
+  --warmup_momentum 0.9 \
+  --warmup_bias_lr 0.05
+```
+
+**exp6-2 warmup_cosine_restart: Cosine Annealing with Warm Restarts**
+
+相對於 exp0 的改動：
+- `--use_cosine_restart`: False → **True**（啟用 Cosine Annealing with Warm Restarts）
+- `--cosine_restart_t0`: **10**（第一個週期的 epoch 數）
+- `--cosine_restart_t_mult`: **2**（每個週期長度的倍增因子）
+- `--warmup_epochs`: 3.0 → **5.0**（配合 cosine restart 的 warmup）
+
+**設計理念**：
+- Cosine Annealing with Warm Restarts 適合超音波數據的週期性特徵
+- 通過週期性重啟學習率，幫助模型跳出局部最優，探索更好的解
+- 適合處理超音波影像中不同深度、不同角度的多樣性
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp6-2 warmup_cosine_restart" \
+  --use_cosine_restart \
+  --cosine_restart_t0 10 \
+  --cosine_restart_t_mult 2 \
+  --warmup_epochs 5.0
+```
+
+**exp6-2 warmup_cosine_restart+keep_top_conf_per_class: Cosine Annealing with Warm Restarts（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp6-2 warmup_cosine_restart+keep_top_conf_per_class" \
+  --use_cosine_restart \
+  --cosine_restart_t0 10 \
+  --cosine_restart_t_mult 2 \
+  --warmup_epochs 5.0 \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
 ```
 
 #### H200 配置 (Multi-GPU / 多 GPU)
@@ -218,10 +519,12 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-h200" \
-  --exp_name="exp0 baseline"
+  --exp_name="exp0 baseline" \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
 ```
 
-**exp1 data_aug: Data Augmentation 優化（針對小物件）**
+**exp1-1 data_aug: Data Augmentation 優化（針對小物件）**
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
@@ -233,12 +536,46 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-h200" \
-  --exp_name="exp1 data_aug" \
+  --exp_name="exp1-1 data_aug" \
   --scale 0.7 \
   --translate 0.15 \
   --hsv_s 0.8 \
   --hsv_v 0.5 \
   --hsv_h 0.0
+```
+
+**exp1-2 ultrasound_aug: 超音波專用數據增強**
+
+**設計理念**：
+- **斑點雜訊（Speckle Noise）**：超音波影像的固有特性，由聲波干涉產生，會降低影像解析度和對比度
+- **深度信號衰減（Signal Attenuation）**：模擬超音波在組織中傳播時的深度相關衰減，底部（深層）信號較弱
+- 這兩種增強技術模擬真實超音波影像的物理特性，提高模型對實際臨床環境的適應性
+
+**參考文獻**：
+1. **Despeckling of Medical Ultrasound Images** (Michailovich & Tannenbaum, 2006)
+   - 概述：研究超音波影像中斑點雜訊的統計特性，提出使用乘性模型描述斑點雜訊的形成過程。論文分析了對數轉換後斑點雜訊的特性，並評估了多種非線性濾波器（小波去噪、總變分濾波、各向異性擴散）在去斑點處理中的性能。研究指出，斑點雜訊會降低影像對比度、模糊細節，從而影響診斷價值。
+   - 連結：https://pmc.ncbi.nlm.nih.gov/articles/PMC3639001/
+   - 關鍵發現：斑點雜訊是超音波影像的固有特性，通過乘性模型可以更好地描述其統計特性；適當的預處理可以將對數轉換後的雜訊轉換為接近白高斯雜訊，從而提高濾波效果。
+
+2. **Speckle Noise Reduction in Ultrasound Images** (Rajabi et al., ISPRS)
+   - 概述：評估多種斑點雜訊去除濾波器在超音波影像上的效果與性能。研究比較了不同濾波方法的優缺點，為超音波影像處理提供了實用的參考。
+   - 連結：https://www.isprs.org/proceedings/xxxvi/1-W41/makaleler/Rajabi_Specle_Noise.pdf
+   - 關鍵發現：不同濾波方法對超音波影像的處理效果各有優劣，需要根據具體應用場景選擇合適的方法。
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp1-2 ultrasound_aug" \
+  --use_ultrasound_aug \
+  --ultrasound_speckle_var 0.1 \
+  --ultrasound_attenuation_factor 0.3
 ```
 
 **exp2 loss_weights: Loss 權重調整（定位優先）**
@@ -294,7 +631,7 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --dim_weights 5.0 1.0 5.0 1.0
 ```
 
-**exp5 hmd_loss: HMD Loss（HMD 距離優化）**
+**exp5-1 hmd_loss_pixel: HMD Loss（像素級別）**
 
 ```bash
 python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
@@ -306,13 +643,296 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-h200" \
-  --exp_name="exp5 hmd_loss" \
+  --exp_name="exp1-2 ultrasound_aug" \
+  --use_ultrasound_aug \
+  --ultrasound_speckle_var 0.1 \
+  --ultrasound_attenuation_factor 0.3
+```
+
+**exp5-1 hmd_loss_pixel: HMD Loss（像素級別）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp5-1 hmd_loss_pixel" \
   --use_hmd_loss \
   --hmd_loss_weight 0.5 \
-  --hmd_penalty_single 500.0 \
-  --hmd_penalty_none 1000.0 \
   --hmd_penalty_coeff 0.5
 ```
+
+**exp5-2 hmd_loss_mm: HMD Loss（毫米級別，真實尺寸）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp5-2 hmd_loss_mm" \
+  --use_hmd_loss \
+  --hmd_use_mm \
+  --hmd_loss_weight 0.5 \
+  --hmd_penalty_coeff 0.5
+```
+
+**exp6-1 warmup_optimized: Warmup 參數優化（針對超音波小物件）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp6-1 warmup_optimized" \
+  --warmup_epochs 5.0 \
+  --warmup_momentum 0.9 \
+  --warmup_bias_lr 0.05
+```
+
+**exp6-2 warmup_cosine_restart: Cosine Annealing with Warm Restarts**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp6-2 warmup_cosine_restart" \
+  --use_cosine_restart \
+  --cosine_restart_t0 10 \
+  --cosine_restart_t_mult 2 \
+  --warmup_epochs 5.0
+```
+
+**exp7-1 siou: SIoU Loss（對角度敏感，適合細長目標）**
+
+相對於 exp0 的改動：
+- `--iou_type`: CIoU → **SIoU**（使用 SIoU Loss）
+
+**設計理念**：
+- **SIoU (Scylla IoU)** 考慮了角度成本、距離成本和形狀成本
+- **對角度敏感**：通過角度成本項，對細長目標的旋轉角度變化更敏感，適合超音波影像中可能出現的角度偏差
+- **適合細長目標**：形狀成本直接優化長寬差異，對 Mentum 和 Hyoid 這類細長結構特別有效
+- **距離成本**：考慮中心點距離，對 HMD 計算有幫助
+
+**參考文獻**：[SIoU Loss: More Powerful Learning for Bounding Box Regression](https://arxiv.org/abs/2205.12740)
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp7-1 siou" \
+  --iou_type SIoU
+```
+
+**exp7-1 siou+keep_top_conf_per_class: SIoU Loss（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp7-1 siou+keep_top_conf_per_class" \
+  --iou_type SIoU \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
+```
+
+**exp7-2 eiou: EIoU Loss（直接優化長寬邊長，適合細長目標）**
+
+相對於 exp0 的改動：
+- `--iou_type`: CIoU → **EIoU**（使用 EIoU Loss）
+
+**設計理念**：
+- **EIoU (Efficient IoU)** 直接優化長寬邊長的真實差異，而非縱橫比
+- **適合細長目標**：直接最小化寬度和高度的差異，對 Mentum 和 Hyoid 這類細長結構特別有效
+- **解決 CIOU 的模糊定義**：CIoU 使用縱橫比，但相同縱橫比可能對應不同的長寬組合；EIoU 直接優化長寬，更精確
+- **中心點距離**：考慮中心點距離，對 HMD 計算有幫助
+
+**參考文獻**：[Focal and Efficient IOU Loss for Accurate Bounding Box Regression](https://arxiv.org/abs/2101.08158)
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp7-2 eiou" \
+  --iou_type EIoU
+```
+
+**exp7-2 eiou+keep_top_conf_per_class: EIoU Loss（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp7-2 eiou+keep_top_conf_per_class" \
+  --iou_type EIoU \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
+```
+
+**exp7-3 diou: DIoU Loss（考慮中心點距離，對 HMD 計算有幫助）**
+
+相對於 exp0 的改動：
+- `--iou_type`: CIoU → **DIoU**（使用 DIoU Loss）
+
+**設計理念**：
+- **DIoU (Distance IoU)** 考慮重疊面積和中心點距離
+- **對 HMD 計算有幫助**：HMD 是 Mentum 和 Hyoid 之間的距離，DIoU 直接優化中心點距離，與 HMD 計算高度相關
+- **收斂速度快**：相比 GIoU，DIoU 收斂更快，適合訓練週期較短的場景
+- **簡單有效**：相比 CIoU，DIoU 不考慮縱橫比，計算更簡單，但對細長目標仍然有效
+
+**參考文獻**：[Distance-IoU Loss: Faster and Better Learning for Bounding Box Regression](https://arxiv.org/abs/1911.08287)
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp7-3 diou" \
+  --iou_type DIoU
+```
+
+**exp7-3 diou+keep_top_conf_per_class: DIoU Loss（帶 keep_top_conf_per_class 參數）**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=16 \
+  --epochs=10 \
+  --device cuda:0 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-4090" \
+  --exp_name="exp7-3 diou+keep_top_conf_per_class" \
+  --iou_type DIoU \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
+```
+
+#### H200 配置 (Multi-GPU / 多 GPU)
+
+**exp7-1 siou: SIoU Loss**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp7-1 siou" \
+  --iou_type SIoU
+```
+
+**exp7-2 eiou: EIoU Loss**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp7-2 eiou" \
+  --iou_type EIoU
+```
+
+**exp7-3 diou: DIoU Loss**
+
+```bash
+python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
+  --db_version=3 \
+  --es \
+  --batch=256 \
+  --epochs=10 \
+  --device 0,1 \
+  --seed 42 \
+  --wandb \
+  --project="ultrasound-det_123_ES-v3-h200" \
+  --exp_name="exp7-3 diou" \
+  --iou_type DIoU
+```
+
+### IoU Loss 方法選擇分析 / IoU Loss Selection Analysis
+
+根據[深度學習筆記：IOU、GIOU、DIOU、CIOU、EIOU、Focal EIOU、alpha IOU、SIOU、WIOU損失函數分析](https://developer.aliyun.com/article/1625721)，邊界框回歸的三大幾何因素為：**重疊面積、中心點距離、縱橫比**。
+
+#### 本專案（det_123 超音波檢測）的特點：
+1. **細長目標**：Mentum 和 Hyoid 都是細長結構
+2. **HMD 計算**：需要計算兩個目標之間的水平距離，中心點距離很重要
+3. **小目標檢測**：目標尺寸較小，需要精確的定位
+4. **高噪音環境**：超音波影像具有高噪音特性
+
+#### 適合的 IoU 方法分析：
+
+| IoU 方法 | 考慮因素 | 適合原因 | 實驗編號 |
+|---------|---------|---------|---------|
+| **SIoU** | 重疊面積 + 角度成本 + 距離成本 + 形狀成本 | **對角度敏感**，適合細長目標；形狀成本直接優化長寬差異 | exp7-1 |
+| **EIoU** | 重疊面積 + 中心點距離 + 長寬邊長真實差 | **直接優化長寬邊長**，適合細長目標；解決 CIOU 的模糊定義 | exp7-2 |
+| **DIoU** | 重疊面積 + 中心點距離 | **考慮中心點距離**，對 HMD 計算有幫助；收斂速度快 | exp7-3 |
+| **CIoU** | 重疊面積 + 中心點距離 + 縱橫比 | 默認方法，作為對照組 | exp0 |
+| **GIoU** | 重疊面積 + 最小外接框 | 解決不相交時 loss=0 的問題，但收斂較慢 | - |
+| **IoU** | 僅重疊面積 | 最簡單，但不相交時無梯度 | - |
+
+#### 推薦順序（針對本專案）：
+1. **SIoU (exp7-1)**：最適合細長目標，對角度敏感，形狀成本直接優化長寬差異
+2. **EIoU (exp7-2)**：直接優化長寬邊長，適合細長目標，計算效率高
+3. **DIoU (exp7-3)**：考慮中心點距離，對 HMD 計算有幫助，收斂速度快
 
 ### HMD Loss 設計說明 / HMD Loss Design
 
@@ -432,6 +1052,41 @@ HMD Loss 針對每張影像的三種情況進行處理：
 ##### 情況 1：兩個目標都檢測到（最佳情況）
 
 當模型同時檢測到 Mentum 和 Hyoid，且 Ground Truth 中也存在這兩個目標時：
+
+**HMD Loss 計算改進**（v0.1.1+）：
+
+1. **Smooth L1 Loss 替代絕對誤差**：
+   - 使用 `F.smooth_l1_loss(pred_hmd, gt_hmd)` 替代 `torch.abs(pred_hmd - gt_hmd)`
+   - **原因**：Smooth L1 Loss 對異常值更穩健，在小誤差時表現類似 L2（平滑），在大誤差時表現類似 L1（對異常值不敏感）
+   - 這對於超音波影像中的異常檢測結果特別重要，可以減少極端錯誤對訓練的影響
+
+2. **Scale-Invariant Loss（相對誤差）**：
+   - 計算相對誤差：`relative_error = |pred_hmd - gt_hmd| / (gt_hmd + eps)`
+   - **原因**：不同患者的 HMD 範圍可能不同（例如：成人 vs. 兒童），絕對誤差可能無法公平地評估不同尺度的預測
+   - 相對誤差確保模型在不同 HMD 範圍下都能得到公平的訓練信號
+   - 最終誤差 = `0.7 × Smooth_L1 + 0.3 × relative_error × gt_hmd`
+
+3. **HMD 方向約束**：
+   - 添加方向懲罰：`direction_penalty = F.relu(mentum_x2 - hyoid_x1)`
+   - **原因**：在正常解剖結構中，Hyoid 應該在 Mentum 的右邊（x 方向：`hyoid_x1 > mentum_x2`）
+   - 如果順序錯誤（`mentum_x2 > hyoid_x1`），則施加懲罰
+   - 方向懲罰標準化為 HMD 誤差的 10%，確保不會過度影響主要誤差項
+   - 這有助於模型學習正確的解剖結構順序，提高預測的臨床合理性
+
+**程式碼實作**（`ultralytics/mycodes/hmd_utils.py` 和 `ultralytics/utils/loss.py`）：
+```python
+# 1. Smooth L1 Loss
+hmd_error_smooth_l1 = F.smooth_l1_loss(pred_hmd, gt_hmd, reduction='none', beta=1.0)
+
+# 2. Scale-invariant loss (relative error)
+relative_error = torch.abs(pred_hmd - gt_hmd) / (gt_hmd + eps)
+hmd_error = 0.7 * hmd_error_smooth_l1 + 0.3 * relative_error * gt_hmd
+
+# 3. HMD direction constraint
+direction_penalty = F.relu(mentum_x2 - hyoid_x1)  # Only penalize if wrong order
+direction_penalty_normalized = direction_penalty / (gt_hmd + eps) * 0.1  # 10% weight
+hmd_error = hmd_error + direction_penalty_normalized
+```
 
 ```python
 # 計算預測的 HMD 和 Ground Truth 的 HMD
@@ -1068,6 +1723,8 @@ if use_dim_weights_flag or use_focal_loss_flag or use_hmd_loss_flag:
    Detection_Rate: 0.8500
    RMSE_HMD (pixel): 45.67 px
    Overall_Score (pixel): 0.82
+   RMSE_HMD (mm): 3.45 mm  (如果 PixelSpacing 可用)
+   Overall_Score (mm): 0.81  (如果 PixelSpacing 可用)
 ```
 
 **重要說明**：
@@ -1192,12 +1849,78 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 | **HMD 指標** | `hmd/detection_rate` | HMD 檢測率 | 每個 epoch（僅 det_123） |
 | | `hmd/rmse_pixel` | HMD RMSE（像素） | 每個 epoch（僅 det_123） |
 | | `hmd/overall_score_pixel` | HMD 綜合評分（像素） | 每個 epoch（僅 det_123） |
+| | `hmd/rmse_mm` | HMD RMSE（毫米） | 每個 epoch（僅 det_123，需要 PixelSpacing） |
+| | `hmd/overall_score_mm` | HMD 綜合評分（毫米） | 每個 epoch（僅 det_123，需要 PixelSpacing） |
 | **學習率** | `lr/pg0` | 學習率（參數組 0） | 每個 epoch |
 | | `lr/pg1` | 學習率（參數組 1，如果存在） | 每個 epoch |
 | **其他** | `epoch` | 當前 epoch 編號 | 每個 epoch |
 | | `time` | 訓練經過時間（秒） | 每個 epoch |
 
 **最終評估階段（val & test）**：通過 `evaluate_detailed` 函數記錄到 W&B
+
+**HMD 指標的 mm 版本**（v0.1.1+）：
+
+在評估階段（validation 和 test），除了像素級別的 HMD 指標外，還會自動計算毫米（mm）版本的指標：
+
+- **RMSE_HMD (mm)**：使用 `PixelSpacing` 將像素級別的 RMSE 轉換為毫米
+- **Overall_Score (mm)**：基於 mm 版本的 RMSE 計算的綜合分數
+
+**計算方式**（v0.1.1+ 改進為按 patient/image 匹配）：
+
+```python
+# 從 Dicom_PixelSpacing_DA.joblib 載入 PixelSpacing 字典
+# 字典鍵值為 DICOM base name（例如："0834980_Quick ID_20240509_155005_B"）
+pixel_spacing_dict = load_pixel_spacing_dict(dicom_root / "Dicom_PixelSpacing_DA.joblib")
+
+# 從 validator 的 dataset 中提取所有圖片路徑
+dataset = validator.dataloader.dataset
+for im_file in dataset.im_files:
+    # 從圖片檔名提取 DICOM base name
+    dicom_base, _ = extract_dicom_info_from_filename(Path(im_file).name)
+    
+    # 在 pixel_spacing_dict 中匹配對應的 PixelSpacing
+    if dicom_base in pixel_spacing_dict:
+        image_pixel_spacings.append(pixel_spacing_dict[dicom_base])
+    else:
+        # 模糊匹配：檢查是否包含或部分匹配
+        # ...
+
+# 使用匹配到的 PixelSpacing 的平均值（而非整個字典的平均值）
+avg_pixel_spacing = np.mean(image_pixel_spacings)
+rmse_mm = rmse_pixel * avg_pixel_spacing
+
+# Overall_Score (mm) 使用 100 作為標準化因子（典型 RMSE 範圍：10-100 mm）
+overall_score_mm = detection_rate / (1 + rmse_mm / 100.0)
+```
+
+**PixelSpacing 提取邏輯**：
+
+`Dicom_PixelSpacing_DA.joblib` 文件中的值為字典格式，包含多個字段。提取時按以下優先級順序：
+
+1. **`truePixelSpacing`**：真正的計算 PixelSpacing（優先使用，約 0.086-0.192 mm/pixel）
+2. **`dcmPixelSpacing`**：DICOM 文件中的原始 PixelSpacing 標籤值
+3. **`PixelSpacing`**：通用 PixelSpacing 鍵值
+4. **`x`**：X 軸間距（用於 `{'x': 0.1, 'y': 0.1}` 格式）
+
+**注意**：會自動跳過非 PixelSpacing 字段（如 `n_frame`, `n_row`, `n_column`, `n_cm`, `n_pixel`），避免誤提取。
+
+**改進說明**：
+- **v0.1.1 之前**：使用整個 `pixel_spacing_dict` 的平均值，可能包含不在當前驗證集中的圖片
+- **v0.1.1+**：從 validator 的 dataset 中提取實際使用的圖片路徑，為每張圖片匹配對應的 PixelSpacing，只計算當前驗證集中圖片的 PixelSpacing 平均值
+- **匹配策略**：
+  1. 精確匹配：直接查找 DICOM base name
+  2. 規範化匹配：移除 `.dcm` 擴展名和 pose 信息（`_Neutral`, `_Extended`, `_Ramped`）後進行匹配
+  3. 子串匹配：檢查 DICOM base name 是否包含在字典鍵值中或反之
+  4. 回退機制：如果無法匹配任何圖片，回退到使用整個字典的平均值
+
+**顯示位置**：
+- **終端輸出**：每個 epoch 的 validation 結果中會顯示 mm 版本的指標（如果 PixelSpacing 字典可用）
+- **W&B 日誌**：記錄為 `val/hmd/rmse_mm` 和 `val/hmd/overall_score_mm`
+- **最終評估**：在 `evaluate_detailed` 函數的結果中也包含 mm 版本指標
+
+**注意事項**：
+- 如果 `Dicom_PixelSpacing_DA.joblib` 文件不存在或無法載入，mm 版本的指標將顯示為 `0.0`
+- mm 版本的指標僅在評估階段計算，訓練階段的 HMD Loss 仍使用像素級別（除非啟用 `--hmd_use_mm`）
 
 **Val 評估記錄的指標**：
 
@@ -1211,6 +1934,8 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 | **HMD 指標** | `val/hmd/detection_rate` | Val HMD 檢測率（僅 det_123） |
 | | `val/hmd/rmse_pixel` | Val HMD RMSE（像素，僅 det_123） |
 | | `val/hmd/overall_score_pixel` | Val HMD 綜合評分（像素，僅 det_123） |
+| | `val/hmd/rmse_mm` | Val HMD RMSE（毫米，僅 det_123，需要 PixelSpacing） |
+| | `val/hmd/overall_score_mm` | Val HMD 綜合評分（毫米，僅 det_123，需要 PixelSpacing） |
 | **速度指標** | `val/inference_speed(ms)` | 推理速度（毫秒） |
 | | `val/preprocess_speed(ms)` | 預處理速度（毫秒） |
 | | `val/postprocess_speed(ms)` | 後處理速度（毫秒） |
@@ -1235,6 +1960,8 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
 | **HMD 指標** | `test/hmd/detection_rate` | Test HMD 檢測率（僅 det_123） |
 | | `test/hmd/rmse_pixel` | Test HMD RMSE（像素，僅 det_123） |
 | | `test/hmd/overall_score_pixel` | Test HMD 綜合評分（像素，僅 det_123） |
+| | `test/hmd/rmse_mm` | Test HMD RMSE（毫米，僅 det_123，需要 PixelSpacing） |
+| | `test/hmd/overall_score_mm` | Test HMD 綜合評分（毫米，僅 det_123，需要 PixelSpacing） |
 | **速度指標** | `test/inference_speed(ms)` | 推理速度（毫秒） |
 | | `test/preprocess_speed(ms)` | 預處理速度（毫秒） |
 | | `test/postprocess_speed(ms)` | 後處理速度（毫秒） |
@@ -1267,6 +1994,8 @@ hmd_metrics = calculate_hmd_metrics_from_validator(
    Detection_Rate: 0.8500
    RMSE_HMD (pixel): 45.67 px
    Overall_Score (pixel): 0.82
+   RMSE_HMD (mm): 3.45 mm  (如果 PixelSpacing 可用)
+   Overall_Score (mm): 0.81  (如果 PixelSpacing 可用)
 ```
 
 **說明**：
@@ -1384,16 +2113,14 @@ python ultralytics/mycodes/analyze_hmd_distribution.py --yaml-dir yolo_dataset/d
     - 監控訓練過程中的 loss 曲線，確保穩定
 
 - **`--hmd_penalty_single`**：
-  - 預設值：`500.0` 像素
-  - 建議範圍：`300.0 - 800.0`
-  - 應根據影像解析度調整（640×640 影像建議 500.0）
-  - **設定原則**：此值應設定為影像中可能出現的最大 HMD 距離的一半左右。對於 640×640 影像，影像對角線長度為 √(640² + 640²) ≈ 905 像素，因此 `penalty_single` 設定為 500.0 像素是合理的（約為對角線長度的 55%）
+  - **自動計算**：根據 `--imgsz` 自動設定為 `imgsz / 2`（預設 `imgsz=640`，因此預設值為 `320.0` 像素）
+  - 可選：如需自訂，可明確指定此參數
+  - **設定原則**：此值應設定為影像中可能出現的最大 HMD 距離的一半左右。對於 640×640 影像，自動計算為 320.0 像素
 
 - **`--hmd_penalty_none`**：
-  - 預設值：`1000.0` 像素
-  - 建議範圍：`800.0 - 1500.0`
-  - 應大於 `penalty_single`，通常為其 2 倍
-  - **設定原則**：此值應設定為影像對角線長度或更大，以確保完全漏檢時有足夠的懲罰。對於 640×640 影像，影像對角線長度為 √(640² + 640²) ≈ 905 像素，因此 `penalty_none` 設定為 1000.0 像素是合理的（略大於對角線長度，確保懲罰足夠）
+  - **自動計算**：根據 `--imgsz` 自動設定為 `imgsz`（預設 `imgsz=640`，因此預設值為 `640.0` 像素）
+  - 可選：如需自訂，可明確指定此參數
+  - **設定原則**：此值應設定為影像寬度或更大，以確保完全漏檢時有足夠的懲罰。對於 640×640 影像，自動計算為 640.0 像素
 
 - **`--hmd_penalty_coeff`**：
   - 預設值：`0.5`
@@ -1403,9 +2130,11 @@ python ultralytics/mycodes/analyze_hmd_distribution.py --yaml-dir yolo_dataset/d
 **HMD Loss Parameters / HMD Loss 參數說明**:
 - `--use_hmd_loss`: 啟用 HMD loss（必需參數）
 - `--hmd_loss_weight`: HMD loss 權重（λ_hmd，預設：0.5）
-- `--hmd_penalty_single`: 只檢測到一個目標時的懲罰值（預設：500.0 像素）
-- `--hmd_penalty_none`: 兩個目標都漏檢時的懲罰值（預設：1000.0 像素）
+- `--hmd_penalty_single`: 只檢測到一個目標時的懲罰值（自動計算：`imgsz / 2`，預設 `imgsz=640` 時為 `320.0` 像素）
+- `--hmd_penalty_none`: 兩個目標都漏檢時的懲罰值（自動計算：`imgsz`，預設 `imgsz=640` 時為 `640.0` 像素）
 - `--hmd_penalty_coeff`: 單個檢測情況下的權重係數（預設：0.5）
+
+**注意**：`--hmd_penalty_single` 和 `--hmd_penalty_none` 會根據 `--imgsz` 自動計算，通常不需要手動指定。如需自訂，可明確指定這些參數。
 
 **Note / 注意**: HMD loss 僅適用於 `det_123` 資料庫。損失函數會自動檢查 `args.database == 'det_123'`，只有在此條件滿足時才會應用 HMD loss。
 
@@ -1475,8 +2204,8 @@ python ultralytics/mycodes/train_yolo.py <model> <database> [options]
 | `--dim_weights` | - | `W_L W_T W_R W_B` (e.g., `5.0 1.0 5.0 1.0`) |
 | `--use_hmd_loss` | - | Enable HMD loss for `det_123` database only |
 | `--hmd_loss_weight` | `0.5` | HMD loss weight (λ_hmd) |
-| `--hmd_penalty_single` | `500.0` | Penalty when only one target detected (pixels) |
-| `--hmd_penalty_none` | `1000.0` | Penalty when both targets missed (pixels) |
+| `--hmd_penalty_single` | `imgsz / 2` (default: `320.0` when `imgsz=640`) | Penalty when only one target detected (pixels, auto-calculated from `imgsz`) |
+| `--hmd_penalty_none` | `imgsz` (default: `640.0` when `imgsz=640`) | Penalty when both targets missed (pixels, auto-calculated from `imgsz`) |
 | `--hmd_penalty_coeff` | `0.5` | Penalty coefficient for single detection |
 
 **Hardware Configuration / 硬體配置：**
@@ -1646,7 +2375,9 @@ python ultralytics/mycodes/train_yolo.py yolo11n det_123 \
   --seed 42 \
   --wandb \
   --project="ultrasound-det_123_ES-v3-4090" \
-  --exp_name="exp0"
+  --exp_name="exp0" \
+  --keep_top_conf_per_class \
+  --conf_low 0.1
 ```
 
 #### Step 2: Test Model on Test Set / 在測試集上測試模型

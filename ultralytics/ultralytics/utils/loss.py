@@ -129,6 +129,7 @@ class BboxLoss(nn.Module):
         reg_max: int = 16,
         use_dim_weights: bool = False,
         dim_weights: Optional[List[float]] = None,
+        iou_type: str = "CIoU",  # Options: "IoU", "GIoU", "DIoU", "CIoU", "EIoU", "SIoU"
     ):
         """
         Initialize the BboxLoss module with regularization maximum and DFL settings.
@@ -155,8 +156,15 @@ class BboxLoss(nn.Module):
         # Register as buffer so it moves with the model to the correct device
         self.register_buffer('dim_weights', torch.tensor(dim_weights, dtype=torch.float32))
         
+        # IoU type configuration
+        valid_iou_types = ["IoU", "GIoU", "DIoU", "CIoU", "EIoU", "SIoU"]
+        if iou_type not in valid_iou_types:
+            raise ValueError(f"iou_type must be one of {valid_iou_types}, got {iou_type}")
+        self.iou_type = iou_type
+        
         if self.use_dim_weights:
             LOGGER.info(f"BboxLoss: Dimension weights enabled - [l, t, r, b] = {dim_weights}")
+        LOGGER.info(f"BboxLoss: IoU type = {iou_type}")
 
     def forward(
         self,
@@ -174,7 +182,16 @@ class BboxLoss(nn.Module):
         If use_dim_weights is True, applies dimension-specific weights to DFL loss.
         """
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+        # Determine IoU type flags
+        iou_kwargs = {
+            "xywh": False,
+            "GIoU": self.iou_type == "GIoU",
+            "DIoU": self.iou_type == "DIoU",
+            "CIoU": self.iou_type == "CIoU",
+            "EIoU": self.iou_type == "EIoU",
+            "SIoU": self.iou_type == "SIoU",
+        }
+        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], **iou_kwargs)
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
@@ -288,6 +305,7 @@ class v8DetectionLoss:
         hmd_penalty_single: Optional[float] = None,
         hmd_penalty_none: Optional[float] = None,
         hmd_penalty_coeff: Optional[float] = None,
+        hmd_use_mm: Optional[bool] = None,
         mentum_class: int = 0,
         hyoid_class: int = 1,
     ):  # model must be de-paralleled
@@ -365,6 +383,8 @@ class v8DetectionLoss:
             hmd_penalty_none = getattr(h, 'hmd_penalty_none', 1000.0)
         if hmd_penalty_coeff is None:
             hmd_penalty_coeff = getattr(h, 'hmd_penalty_coeff', 0.5)
+        if hmd_use_mm is None:
+            hmd_use_mm = getattr(h, 'hmd_use_mm', False)
         
         # Debug logging to verify parameters are read correctly
         if hasattr(h, 'use_hmd_loss') and getattr(h, 'use_hmd_loss', False):
@@ -379,22 +399,50 @@ class v8DetectionLoss:
         self.hmd_penalty_single = hmd_penalty_single
         self.hmd_penalty_none = hmd_penalty_none
         self.hmd_penalty_coeff = hmd_penalty_coeff
+        self.hmd_use_mm = hmd_use_mm
         self.mentum_class = mentum_class
         self.hyoid_class = hyoid_class
         self.last_hmd_loss = 0.0  # Store last HMD loss value for logging (last batch only)
         self.hmd_loss_sum = 0.0  # Accumulate HMD loss across batches
         self.hmd_loss_count = 0  # Count batches with HMD loss
         
+        # Load PixelSpacing dictionary if mm mode is enabled
+        self.pixel_spacing_dict = {}
+        self.avg_pixel_spacing = None
+        if self.use_hmd_loss and self.hmd_use_mm:
+            try:
+                from mycodes.hmd_utils import load_pixel_spacing_dict
+                self.pixel_spacing_dict = load_pixel_spacing_dict()
+                if self.pixel_spacing_dict:
+                    # Calculate average pixel spacing for use when specific image spacing is not available
+                    spacing_values = [v for v in self.pixel_spacing_dict.values() if isinstance(v, (int, float)) and v > 0]
+                    if spacing_values:
+                        self.avg_pixel_spacing = sum(spacing_values) / len(spacing_values)
+                        LOGGER.info(f"v8DetectionLoss: Loaded {len(self.pixel_spacing_dict)} PixelSpacing entries, "
+                                   f"average={self.avg_pixel_spacing:.4f} mm/pixel")
+                    else:
+                        LOGGER.warning(f"v8DetectionLoss: PixelSpacing dictionary loaded but no valid values found")
+                else:
+                    LOGGER.warning(f"v8DetectionLoss: Failed to load PixelSpacing dictionary, mm calculation disabled")
+                    self.hmd_use_mm = False
+            except Exception as e:
+                LOGGER.warning(f"v8DetectionLoss: Failed to load PixelSpacing dictionary: {e}, mm calculation disabled")
+                self.hmd_use_mm = False
+        
         if self.use_hmd_loss:
-            LOGGER.info(f"v8DetectionLoss: HMD Loss enabled - weight={hmd_loss_weight}, "
+            unit_str = "mm" if self.hmd_use_mm else "pixel"
+            LOGGER.info(f"v8DetectionLoss: HMD Loss enabled - weight={hmd_loss_weight}, unit={unit_str}, "
                        f"penalty_single={hmd_penalty_single}, penalty_none={hmd_penalty_none}, "
                        f"mentum_class={mentum_class}, hyoid_class={hyoid_class}")
 
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
+        # Read IoU type from model.args if not provided
+        iou_type = getattr(h, 'iou_type', 'CIoU')  # Default to CIoU
         self.bbox_loss = BboxLoss(
             m.reg_max, 
             use_dim_weights=use_dim_weights,
-            dim_weights=dim_weights
+            dim_weights=dim_weights,
+            iou_type=iou_type
         ).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
@@ -514,32 +562,54 @@ class v8DetectionLoss:
         self.hmd_loss_sum = 0.0
         self.hmd_loss_count = 0
         self.last_hmd_loss = 0.0
+        # Also reset hmd_stats to start fresh for each epoch
+        if hasattr(self, 'hmd_stats'):
+            self.hmd_stats = {
+                'rmse_with_penalty': [],
+                'mae_with_penalty': [],
+                'rmse_no_penalty': [],
+                'mae_no_penalty': [],
+            }
 
-    def _calculate_hmd_from_boxes(self, mentum_box: torch.Tensor, hyoid_box: torch.Tensor) -> torch.Tensor:
+    def _calculate_hmd_from_boxes(self, mentum_box: torch.Tensor, hyoid_box: torch.Tensor, 
+                                  pixel_spacing: Optional[float] = None) -> torch.Tensor:
         """
-        Calculate HMD from two bounding boxes in pixel coordinates
+        Calculate HMD from two bounding boxes
         
         Args:
             mentum_box: [x1, y1, x2, y2] format tensor
             hyoid_box: [x1, y1, x2, y2] format tensor
+            pixel_spacing: Optional pixel spacing (mm/pixel) to convert to mm.
+                          If None, uses self.avg_pixel_spacing if hmd_use_mm is True, otherwise returns pixel distance.
         
         Returns:
-            HMD distance in pixels (scalar tensor)
+            HMD distance in pixels (if pixel_spacing=None and hmd_use_mm=False) 
+            or millimeters (if pixel_spacing provided or hmd_use_mm=True)
         """
+        # Determine pixel_spacing to use
+        if pixel_spacing is None and self.hmd_use_mm and self.avg_pixel_spacing is not None:
+            pixel_spacing = self.avg_pixel_spacing
+        
         # Use hmd_utils function if available, otherwise use local implementation
         if _HMD_UTILS_AVAILABLE:
-            return calculate_hmd_from_boxes(mentum_box, hyoid_box)
+            return calculate_hmd_from_boxes(mentum_box, hyoid_box, pixel_spacing=pixel_spacing)
         
         # Fallback to local implementation
         mentum_x1, mentum_y1, mentum_x2, mentum_y2 = mentum_box
         hyoid_x1, hyoid_y1, hyoid_x2, hyoid_y2 = hyoid_box
         
-        # Calculate HMD
+        # Calculate HMD in pixels
         hmd_dx = hyoid_x1 - mentum_x2
         mentum_y_center = (mentum_y1 + mentum_y2) / 2
         hyoid_y_center = (hyoid_y1 + hyoid_y2) / 2
         hmd_dy = hyoid_y_center - mentum_y_center
-        hmd = torch.sqrt(hmd_dx**2 + hmd_dy**2 + 1e-8)  # Add small epsilon for numerical stability
+        hmd_pixel = torch.sqrt(hmd_dx**2 + hmd_dy**2 + 1e-8)  # Add small epsilon for numerical stability
+        
+        # Convert to mm if needed
+        if pixel_spacing is not None:
+            hmd = hmd_pixel * pixel_spacing
+        else:
+            hmd = hmd_pixel
         
         return hmd
 
@@ -640,16 +710,38 @@ class v8DetectionLoss:
                 target_boxes_batch = target_boxes_list[b].unsqueeze(0)  # [1, num_fg, 4]
                 target_cls_batch = target_cls_list[b].unsqueeze(0)  # [1, num_fg]
                 
-                hmd_loss_b, _ = calculate_hmd_loss(
+                # Determine pixel_spacing to use for this batch
+                pixel_spacing_batch = None
+                if self.hmd_use_mm and self.avg_pixel_spacing is not None:
+                    pixel_spacing_batch = self.avg_pixel_spacing
+                
+                hmd_loss_b, stats_b = calculate_hmd_loss(
                     pred_boxes_batch, pred_conf_batch, pred_cls_batch,
                     target_boxes_batch, target_cls_batch,
                     mentum_class=self.mentum_class,
                     hyoid_class=self.hyoid_class,
                     penalty_single=self.hmd_penalty_single,
                     penalty_none=self.hmd_penalty_none,
-                    penalty_coeff=self.hmd_penalty_coeff
+                    penalty_coeff=self.hmd_penalty_coeff,
+                    pixel_spacing=pixel_spacing_batch
                 )
                 hmd_losses.append(hmd_loss_b)
+                # Accumulate stats for epoch-level metrics
+                if not hasattr(self, 'hmd_stats'):
+                    self.hmd_stats = {
+                        'rmse_with_penalty': [],
+                        'mae_with_penalty': [],
+                        'rmse_no_penalty': [],
+                        'mae_no_penalty': [],
+                    }
+                if 'rmse_with_penalty' in stats_b and stats_b['rmse_with_penalty'] > 0:
+                    self.hmd_stats['rmse_with_penalty'].append(stats_b['rmse_with_penalty'])
+                if 'mae_with_penalty' in stats_b and stats_b['mae_with_penalty'] > 0:
+                    self.hmd_stats['mae_with_penalty'].append(stats_b['mae_with_penalty'])
+                if 'rmse_no_penalty' in stats_b and stats_b['rmse_no_penalty'] > 0:
+                    self.hmd_stats['rmse_no_penalty'].append(stats_b['rmse_no_penalty'])
+                if 'mae_no_penalty' in stats_b and stats_b['mae_no_penalty'] > 0:
+                    self.hmd_stats['mae_no_penalty'].append(stats_b['mae_no_penalty'])
             
             # Average across batch
             if len(hmd_losses) > 0:
@@ -733,15 +825,47 @@ class v8DetectionLoss:
                 mentum_target_idx = torch.where(mentum_target_mask)[0][0]
                 hyoid_target_idx = torch.where(hyoid_target_mask)[0][0]
                 
+                # Determine pixel_spacing to use
+                pixel_spacing_b = None
+                if self.hmd_use_mm and self.avg_pixel_spacing is not None:
+                    pixel_spacing_b = self.avg_pixel_spacing
+                
                 # Calculate HMD
                 pred_hmd = self._calculate_hmd_from_boxes(
-                    pred_boxes_fg[mentum_idx], pred_boxes_fg[hyoid_idx]
+                    pred_boxes_fg[mentum_idx], pred_boxes_fg[hyoid_idx], pixel_spacing=pixel_spacing_b
                 )
                 gt_hmd = self._calculate_hmd_from_boxes(
-                    target_boxes_fg[mentum_target_idx], target_boxes_fg[hyoid_target_idx]
+                    target_boxes_fg[mentum_target_idx], target_boxes_fg[hyoid_target_idx], pixel_spacing=pixel_spacing_b
                 )
                 
-                hmd_error = torch.abs(pred_hmd - gt_hmd)
+                # 1. Use Smooth L1 Loss instead of absolute error for robustness to outliers
+                # Smooth L1 is more robust to outliers than L1, and smoother than L2 near zero
+                eps = 1e-8
+                hmd_error_smooth_l1 = F.smooth_l1_loss(pred_hmd, gt_hmd, reduction='none', beta=1.0)
+                
+                # 2. Add scale-invariant loss (relative error)
+                # Different patients may have different HMD ranges, so relative error is more meaningful
+                relative_error = torch.abs(pred_hmd - gt_hmd) / (gt_hmd + eps)
+                
+                # Combine Smooth L1 and relative error (weighted combination)
+                # Smooth L1 for absolute accuracy, relative error for scale-invariance
+                hmd_error = 0.7 * hmd_error_smooth_l1 + 0.3 * relative_error * gt_hmd
+                
+                # 3. Add HMD direction constraint penalty
+                # Hyoid should be to the right of Mentum (x direction: hyoid_x1 > mentum_x2)
+                mentum_box = pred_boxes_fg[mentum_idx]
+                hyoid_box = pred_boxes_fg[hyoid_idx]
+                mentum_x1, mentum_y1, mentum_x2, mentum_y2 = mentum_box
+                hyoid_x1, hyoid_y1, hyoid_x2, hyoid_y2 = hyoid_box
+                # If order is wrong (mentum_x2 > hyoid_x1), apply penalty
+                direction_penalty = F.relu(mentum_x2 - hyoid_x1)  # Only penalize if wrong order
+                # Normalize direction penalty to be comparable with HMD error scale
+                # Typical HMD is ~200-500 pixels, so normalize direction penalty accordingly
+                direction_penalty_normalized = direction_penalty / (gt_hmd + eps) * 0.1  # 10% weight
+                
+                # Add direction penalty to HMD error
+                hmd_error = hmd_error + direction_penalty_normalized
+                
                 weight = pred_conf_fg[mentum_idx, self.mentum_class] * pred_conf_fg[hyoid_idx, self.hyoid_class]
                 
                 hmd_errors.append(hmd_error)

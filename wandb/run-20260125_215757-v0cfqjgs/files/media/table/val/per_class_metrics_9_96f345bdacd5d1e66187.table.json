@@ -1,0 +1,1 @@
+{"columns": ["class_id", "class_name", "precision", "recall", "AP50", "AP75", "F1", "IoU"], "data": [[0, "Mentum", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1, "Hyoid", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]}

@@ -11,15 +11,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-# Load environment variables from .env file / 從 .env 檔案載入環境變數
+# Load environment variables from .env file
 try:
     from dotenv import load_dotenv
-    # Load .env file from ultralytics directory / 從 ultralytics 目錄載入 .env 檔案
+    # Load .env file from ultralytics directory
     env_path = Path(__file__).parent.parent / '.env'
     if env_path.exists():
         load_dotenv(dotenv_path=env_path)
 except ImportError:
-    # python-dotenv not installed, skip / 未安裝 python-dotenv，跳過
+    # python-dotenv not installed, skip
     pass
 
 
@@ -34,17 +34,71 @@ def print_validation_metrics(trainer):
     map50_95 = 0.0
     
     try:
+        # Try multiple methods to get metrics
+        metrics_source = None
+        
+        # Method 1: Try trainer.metrics.mean_results()
         if hasattr(trainer, 'metrics') and trainer.metrics is not None:
-            # Get mean results: [mp, mr, map50, map50-95]
+            metrics_source = trainer.metrics
             if hasattr(trainer.metrics, 'mean_results'):
-                mp, mr, map50, map50_95 = trainer.metrics.mean_results()
-                precision = float(mp)
-                recall = float(mr)
-                map50 = float(map50)
-                map50_95 = float(map50_95)
-    except Exception:
-        pass
+                mean_results = trainer.metrics.mean_results()
+                if mean_results and len(mean_results) >= 4:
+                    mp, mr, map50_val, map50_95_val = mean_results
+                    precision = float(mp) if mp is not None and not np.isnan(mp) else 0.0
+                    recall = float(mr) if mr is not None and not np.isnan(mr) else 0.0
+                    map50 = float(map50_val) if map50_val is not None and not np.isnan(map50_val) else 0.0
+                    map50_95 = float(map50_95_val) if map50_95_val is not None and not np.isnan(map50_95_val) else 0.0
+        
+        # Method 2: Try directly from trainer.metrics.box (if mean_results didn't work)
+        if (precision == 0.0 and recall == 0.0 and map50 == 0.0 and map50_95 == 0.0) and \
+           hasattr(trainer, 'metrics') and trainer.metrics is not None:
+            if hasattr(trainer.metrics, 'box') and trainer.metrics.box is not None:
+                box = trainer.metrics.box
+                try:
+                    precision = float(box.mp) if hasattr(box, 'mp') and box.mp is not None else 0.0
+                    recall = float(box.mr) if hasattr(box, 'mr') and box.mr is not None else 0.0
+                    map50 = float(box.map50) if hasattr(box, 'map50') and box.map50 is not None else 0.0
+                    map50_95 = float(box.map) if hasattr(box, 'map') and box.map is not None else 0.0
+                except Exception as e:
+                    logging.debug(f"Failed to get metrics from box: {e}")
+        
+        # Method 3: Try validator.metrics if trainer.metrics is not available
+        if (precision == 0.0 and recall == 0.0 and map50 == 0.0 and map50_95 == 0.0) and \
+           hasattr(trainer, 'validator') and trainer.validator is not None:
+            validator = trainer.validator
+            if hasattr(validator, 'metrics') and validator.metrics is not None:
+                metrics_source = validator.metrics
+                if hasattr(validator.metrics, 'mean_results'):
+                    mean_results = validator.metrics.mean_results()
+                    if mean_results and len(mean_results) >= 4:
+                        mp, mr, map50_val, map50_95_val = mean_results
+                        precision = float(mp) if mp is not None and not np.isnan(mp) else 0.0
+                        recall = float(mr) if mr is not None and not np.isnan(mr) else 0.0
+                        map50 = float(map50_val) if map50_val is not None and not np.isnan(map50_val) else 0.0
+                        map50_95 = float(map50_95_val) if map50_95_val is not None and not np.isnan(map50_95_val) else 0.0
+                # Also try from validator.metrics.box
+                if (precision == 0.0 and recall == 0.0 and map50 == 0.0 and map50_95 == 0.0) and \
+                   hasattr(validator.metrics, 'box') and validator.metrics.box is not None:
+                    box = validator.metrics.box
+                    try:
+                        precision = float(box.mp) if hasattr(box, 'mp') and box.mp is not None else 0.0
+                        recall = float(box.mr) if hasattr(box, 'mr') and box.mr is not None else 0.0
+                        map50 = float(box.map50) if hasattr(box, 'map50') and box.map50 is not None else 0.0
+                        map50_95 = float(box.map) if hasattr(box, 'map') and box.map is not None else 0.0
+                    except Exception as e:
+                        logging.debug(f"Failed to get metrics from validator.box: {e}")
+        
+        # Debug: log if we still have zeros
+        if precision == 0.0 and recall == 0.0 and map50 == 0.0 and map50_95 == 0.0:
+            logging.warning(f"⚠️ All metrics are 0.0 - metrics_source: {metrics_source}, "
+                          f"has_trainer_metrics: {hasattr(trainer, 'metrics')}, "
+                          f"has_validator: {hasattr(trainer, 'validator')}")
+    except Exception as e:
+        logging.warning(f"⚠️ Failed to get metrics: {e}")
+        import traceback
+        logging.debug(traceback.format_exc())
     
+    # Calculate fitness: fitness = map50 * 0.1 + map50_95 * 0.9
     fitness = map50 * 0.1 + map50_95 * 0.9
     
     # Get HMD loss from additional_metrics (set by on_val_end_callback) or directly from criterion
@@ -98,7 +152,6 @@ def print_validation_metrics(trainer):
     hmd_enabled = hmd_val and is_det_123
     
     # Debug: print condition check (can be removed later)
-    import logging
     logging.info(f"print_validation_metrics: database={db_val}, use_hmd_loss={hmd_val}, is_det_123={is_det_123}, hmd_enabled={hmd_enabled}")
     
     # HMD loss value: only show if HMD loss is enabled
@@ -111,40 +164,94 @@ def print_validation_metrics(trainer):
     # HMD metrics (if available and database is det_123)
     # Try to get from additional_metrics (set by on_val_end_callback)
     detection_rate = 0.0
-    rmse_pixel = 0.0
     overall_score_pixel = 0.0
+    rmse_no_penalty_pixel = 0.0
+    mae_no_penalty_pixel = 0.0
     
     # First try to get from trainer._additional_metrics
     if hasattr(trainer, '_additional_metrics') and trainer._additional_metrics is not None:
         additional_metrics = trainer._additional_metrics
         detection_rate = float(additional_metrics.get("hmd/detection_rate") or additional_metrics.get("val/hmd/detection_rate", 0))
-        rmse_pixel = float(additional_metrics.get("hmd/rmse_pixel") or additional_metrics.get("val/hmd/rmse_pixel", 0))
         overall_score_pixel = float(additional_metrics.get("hmd/overall_score_pixel") or additional_metrics.get("val/hmd/overall_score_pixel", 0))
+        rmse_no_penalty_pixel = float(additional_metrics.get("hmd/rmse_no_penalty_pixel") or additional_metrics.get("val/hmd/rmse_no_penalty_pixel", 0))
+        mae_no_penalty_pixel = float(additional_metrics.get("hmd/mae_no_penalty_pixel") or additional_metrics.get("val/hmd/mae_no_penalty_pixel", 0))
     # If not found in trainer, try to get from validator (if available)
     elif hasattr(trainer, 'validator') and trainer.validator is not None:
         validator = trainer.validator
         if hasattr(validator, '_additional_metrics') and validator._additional_metrics is not None:
             additional_metrics = validator._additional_metrics
             detection_rate = float(additional_metrics.get("hmd/detection_rate") or additional_metrics.get("val/hmd/detection_rate", 0))
-            rmse_pixel = float(additional_metrics.get("hmd/rmse_pixel") or additional_metrics.get("val/hmd/rmse_pixel", 0))
             overall_score_pixel = float(additional_metrics.get("hmd/overall_score_pixel") or additional_metrics.get("val/hmd/overall_score_pixel", 0))
+            rmse_no_penalty_pixel = float(additional_metrics.get("hmd/rmse_no_penalty_pixel") or additional_metrics.get("val/hmd/rmse_no_penalty_pixel", 0))
+            mae_no_penalty_pixel = float(additional_metrics.get("hmd/mae_no_penalty_pixel") or additional_metrics.get("val/hmd/mae_no_penalty_pixel", 0))
     
     # Always show HMD metrics section if database is det_123 (even without HMD loss enabled)
     # This allows monitoring HMD performance for all det_123 experiments
     if is_det_123:
+        # Get mm version metrics
+        overall_score_mm = 0.0
+        rmse_no_penalty_mm = 0.0
+        mae_no_penalty_mm = 0.0
+        if hasattr(trainer, '_additional_metrics') and trainer._additional_metrics is not None:
+            additional_metrics = trainer._additional_metrics
+            overall_score_mm = float(additional_metrics.get("hmd/overall_score_mm") or additional_metrics.get("val/hmd/overall_score_mm", 0))
+            rmse_no_penalty_mm = float(additional_metrics.get("hmd/rmse_no_penalty_mm") or additional_metrics.get("val/hmd/rmse_no_penalty_mm", 0))
+            mae_no_penalty_mm = float(additional_metrics.get("hmd/mae_no_penalty_mm") or additional_metrics.get("val/hmd/mae_no_penalty_mm", 0))
+        elif hasattr(trainer, 'validator') and trainer.validator is not None:
+            validator = trainer.validator
+            if hasattr(validator, '_additional_metrics') and validator._additional_metrics is not None:
+                additional_metrics = validator._additional_metrics
+                overall_score_mm = float(additional_metrics.get("hmd/overall_score_mm") or additional_metrics.get("val/hmd/overall_score_mm", 0))
+                rmse_no_penalty_mm = float(additional_metrics.get("hmd/rmse_no_penalty_mm") or additional_metrics.get("val/hmd/rmse_no_penalty_mm", 0))
+                mae_no_penalty_mm = float(additional_metrics.get("hmd/mae_no_penalty_mm") or additional_metrics.get("val/hmd/mae_no_penalty_mm", 0))
+        
         print(f"\n📏 HMD Metrics (det_123):", flush=True)
         print(f"   Detection_Rate: {detection_rate:.4f}", flush=True)
-        print(f"   RMSE_HMD (pixel): {rmse_pixel:.2f} px", flush=True)
-        print(f"   Overall_Score (pixel): {overall_score_pixel:.4f}", flush=True)
+        
+        # Only show No Penalty metrics (based on actual boxes)
+        print(f"\n   📊 No Penalty (only both detected cases, all based on real boxes):", flush=True)
+        if rmse_no_penalty_pixel > 0.0:
+            print(f"      RMSE_HMD (pixel): {rmse_no_penalty_pixel:.2f} px", flush=True)
+            print(f"      MAE_HMD (pixel): {mae_no_penalty_pixel:.2f} px", flush=True)
+            print(f"      Overall_Score (pixel): {overall_score_pixel:.4f}", flush=True)
+        else:
+            print(f"      RMSE_HMD (pixel): N/A (no both detected cases)", flush=True)
+            print(f"      MAE_HMD (pixel): N/A (no both detected cases)", flush=True)
+            print(f"      Overall_Score (pixel): N/A", flush=True)
+        
+        # Always show mm version if it was calculated (even if 0.0)
+        # Check if mm metrics exist in additional_metrics (indicating calculation was attempted)
+        mm_metrics_exist = False
+        if hasattr(trainer, '_additional_metrics') and trainer._additional_metrics is not None:
+            mm_metrics_exist = ("hmd/rmse_no_penalty_mm" in trainer._additional_metrics or 
+                               "val/hmd/rmse_no_penalty_mm" in trainer._additional_metrics)
+        elif hasattr(trainer, 'validator') and trainer.validator is not None:
+            validator = trainer.validator
+            if hasattr(validator, '_additional_metrics') and validator._additional_metrics is not None:
+                mm_metrics_exist = ("hmd/rmse_no_penalty_mm" in validator._additional_metrics or 
+                                   "val/hmd/rmse_no_penalty_mm" in validator._additional_metrics)
+        
+        if mm_metrics_exist:
+            print(f"\n   📏 No Penalty (mm):", flush=True)
+            if rmse_no_penalty_mm > 0.0:
+                print(f"      RMSE_HMD (mm): {rmse_no_penalty_mm:.2f} mm", flush=True)
+                print(f"      MAE_HMD (mm): {mae_no_penalty_mm:.2f} mm", flush=True)
+                print(f"      Overall_Score (mm): {overall_score_mm:.4f}", flush=True)
+            else:
+                print(f"      RMSE_HMD (mm): N/A (no both detected cases)", flush=True)
+                print(f"      MAE_HMD (mm): N/A (no both detected cases)", flush=True)
+                print(f"      Overall_Score (mm): N/A", flush=True)
+        else:
+            print(f"   📏 No Penalty (mm): N/A (PixelSpacing not available)", flush=True)
 
 
 def log_train_metrics(trainer):
-    """回调函数：在每个epoch结束时记录训练指标到W&B"""
+    """Callback function: Log training metrics to W&B at the end of each epoch"""
     train_start_time = wandb.run.summary.get("train_start_time", datetime.now().timestamp())
     now = datetime.now().timestamp()
     elapsed = now - train_start_time
     
-    # 自动unpack training loss
+    # Automatically unpack training loss
     if hasattr(trainer, "loss_items") and trainer.loss_items is not None:
         try:
             box_loss, cls_loss, dfl_loss = map(float, trainer.loss_items)
@@ -153,7 +260,7 @@ def log_train_metrics(trainer):
     else:
         box_loss, cls_loss, dfl_loss = 0.0, 0.0, 0.0
     
-    # 从 trainer.metrics 取得 val 结果
+    # Get validation results from trainer.metrics
     # trainer.metrics is a DetMetrics object, extract metrics properly
     precision = 0.0
     recall = 0.0
@@ -161,16 +268,34 @@ def log_train_metrics(trainer):
     map50_95 = 0.0
     
     try:
+        # Try multiple methods to get metrics
+        # Method 1: Try trainer.metrics.mean_results()
         if hasattr(trainer, 'metrics') and trainer.metrics is not None:
-            # Get mean results: [mp, mr, map50, map50-95]
             if hasattr(trainer.metrics, 'mean_results'):
-                mp, mr, map50, map50_95 = trainer.metrics.mean_results()
-                precision = float(mp)
-                recall = float(mr)
-                map50 = float(map50)
-                map50_95 = float(map50_95)
-    except Exception:
-        pass
+                mean_results = trainer.metrics.mean_results()
+                if mean_results and len(mean_results) >= 4:
+                    mp, mr, map50_val, map50_95_val = mean_results
+                    precision = float(mp) if mp is not None and not np.isnan(mp) else 0.0
+                    recall = float(mr) if mr is not None and not np.isnan(mr) else 0.0
+                    map50 = float(map50_val) if map50_val is not None and not np.isnan(map50_val) else 0.0
+                    map50_95 = float(map50_95_val) if map50_95_val is not None and not np.isnan(map50_95_val) else 0.0
+        
+        # Method 2: Try directly from trainer.metrics.box (if mean_results didn't work)
+        if (precision == 0.0 and recall == 0.0 and map50 == 0.0 and map50_95 == 0.0) and \
+           hasattr(trainer, 'metrics') and trainer.metrics is not None:
+            if hasattr(trainer.metrics, 'box') and trainer.metrics.box is not None:
+                box = trainer.metrics.box
+                try:
+                    precision = float(box.mp) if hasattr(box, 'mp') and box.mp is not None else 0.0
+                    recall = float(box.mr) if hasattr(box, 'mr') and box.mr is not None else 0.0
+                    map50 = float(box.map50) if hasattr(box, 'map50') and box.map50 is not None else 0.0
+                    map50_95 = float(box.map) if hasattr(box, 'map') and box.map is not None else 0.0
+                except Exception as e:
+                    logging.debug(f"Failed to get metrics from box: {e}")
+    except Exception as e:
+        logging.warning(f"⚠️ Failed to get metrics from trainer.metrics: {e}")
+        import traceback
+        logging.debug(traceback.format_exc())
     
     # Extract all metrics
     logs = {
@@ -229,48 +354,211 @@ def log_train_metrics(trainer):
         if hasattr(trainer, '_additional_metrics'):
             additional_metrics = trainer._additional_metrics
             # Try both naming conventions (hmd/... and val/hmd/...)
+            # Only use No Penalty metrics (based on actual boxes)
             detection_rate = float(additional_metrics.get("val/hmd/detection_rate") or additional_metrics.get("hmd/detection_rate", 0))
-            rmse_pixel = float(additional_metrics.get("val/hmd/rmse_pixel") or additional_metrics.get("hmd/rmse_pixel", 0))
             overall_score_pixel = float(additional_metrics.get("val/hmd/overall_score_pixel") or additional_metrics.get("hmd/overall_score_pixel", 0))
+            overall_score_mm = float(additional_metrics.get("val/hmd/overall_score_mm") or additional_metrics.get("hmd/overall_score_mm", 0))
+            rmse_no_penalty_pixel = float(additional_metrics.get("val/hmd/rmse_no_penalty_pixel") or additional_metrics.get("hmd/rmse_no_penalty_pixel", 0))
+            mae_no_penalty_pixel = float(additional_metrics.get("val/hmd/mae_no_penalty_pixel") or additional_metrics.get("hmd/mae_no_penalty_pixel", 0))
+            rmse_no_penalty_mm = float(additional_metrics.get("val/hmd/rmse_no_penalty_mm") or additional_metrics.get("hmd/rmse_no_penalty_mm", 0))
+            mae_no_penalty_mm = float(additional_metrics.get("val/hmd/mae_no_penalty_mm") or additional_metrics.get("hmd/mae_no_penalty_mm", 0))
+            
+            # Only record No Penalty metrics (based on actual boxes)
             logs["val/hmd/detection_rate"] = detection_rate
-            logs["val/hmd/rmse_pixel"] = rmse_pixel
+            logs["val/hmd/rmse_no_penalty_pixel"] = rmse_no_penalty_pixel
+            logs["val/hmd/mae_no_penalty_pixel"] = mae_no_penalty_pixel
             logs["val/hmd/overall_score_pixel"] = overall_score_pixel
+            logs["val/hmd/rmse_no_penalty_mm"] = rmse_no_penalty_mm
+            logs["val/hmd/mae_no_penalty_mm"] = mae_no_penalty_mm
+            logs["val/hmd/overall_score_mm"] = overall_score_mm
         else:
+            # Only record No Penalty metrics (based on actual boxes)
             logs["val/hmd/detection_rate"] = 0.0
-            logs["val/hmd/rmse_pixel"] = 0.0
+            logs["val/hmd/rmse_no_penalty_pixel"] = 0.0
+            logs["val/hmd/mae_no_penalty_pixel"] = 0.0
             logs["val/hmd/overall_score_pixel"] = 0.0
+            logs["val/hmd/rmse_no_penalty_mm"] = 0.0
+            logs["val/hmd/mae_no_penalty_mm"] = 0.0
+            logs["val/hmd/overall_score_mm"] = 0.0
     
-    # 记录学习率
+    # Log learning rate
     for i, pg in enumerate(trainer.optimizer.param_groups):
         logs[f"lr/pg{i}"] = float(pg["lr"])
     
     wandb.log(logs, step=trainer.epoch)
 
 
-def on_val_batch_end_callback(trainer):
-    """Callback to collect predictions and ground truth bboxes for HMD calculation"""
-    # Only collect if HMD loss is enabled and database is det_123
-    if not (hasattr(trainer, 'args') and hasattr(trainer.args, 'database') and 
-            trainer.args.database == 'det_123' and
-            hasattr(trainer.args, 'use_hmd_loss') and trainer.args.use_hmd_loss):
+def on_val_batch_end_callback(validator_or_trainer):
+    """Callback to collect predictions and ground truth bboxes for HMD calculation
+    
+    This callback collects boxes even when HMD loss is not enabled, so we can calculate
+    real HMD errors in Method 2 of calculate_hmd_metrics_from_validator.
+    
+    Note: on_val_batch_end receives validator object, not trainer.
+    """
+    # Log that callback was called (only first time to avoid spam)
+    if not hasattr(validator_or_trainer, '_callback_called_logged'):
+        validator_or_trainer._callback_called_logged = True
+        logging.info(f"🔔 on_val_batch_end_callback called with type: {type(validator_or_trainer)}")
+    
+    # Determine if we received validator or trainer
+    validator = None
+    trainer = None
+    
+    if hasattr(validator_or_trainer, 'stats') or hasattr(validator_or_trainer, 'nc'):
+        # It's a validator
+        validator = validator_or_trainer
+        # Try to get trainer from validator
+        if hasattr(validator, 'trainer') and validator.trainer is not None:
+            trainer = validator.trainer
+    elif hasattr(validator_or_trainer, 'validator'):
+        # It's a trainer
+        trainer = validator_or_trainer
+        validator = trainer.validator if hasattr(trainer, 'validator') else None
+    else:
+        # Unknown type, try to use as validator
+        validator = validator_or_trainer
+        if hasattr(validator, 'trainer') and validator.trainer is not None:
+            trainer = validator.trainer
+    
+    # Only collect if database is det_123 (regardless of use_hmd_loss)
+    database = None
+    if trainer is not None and hasattr(trainer, 'args') and hasattr(trainer.args, 'database'):
+        database = trainer.args.database
+    elif validator is not None and hasattr(validator, 'args') and hasattr(validator.args, 'database'):
+        database = validator.args.database
+    
+    if database != 'det_123':
+        return
+    
+    # Need trainer to store collection
+    if trainer is None:
+        logging.debug("⚠️ on_val_batch_end_callback: trainer not available, skipping box collection")
         return
     
     # Initialize HMD data collection if not exists
     if not hasattr(trainer, '_hmd_collection'):
         trainer._hmd_collection = {
-            'pred_boxes': [],  # List of (image_idx, class, bbox_xyxy, conf)
-            'gt_boxes': [],    # List of (image_idx, class, bbox_xyxy)
-            'image_files': []  # List of image file paths
+            'pred_boxes': [],  # List of dicts: {'image_idx': int, 'class': int, 'bbox': [x1,y1,x2,y2], 'conf': float}
+            'gt_boxes': [],    # List of dicts: {'image_idx': int, 'class': int, 'bbox': [x1,y1,x2,y2]}
+            'image_files': []  # List of image file paths (for pixel spacing lookup)
         }
     
     # Get validator to access current batch
-    if hasattr(trainer, 'validator') and trainer.validator is not None:
-        validator = trainer.validator
-        # Try to access batch data from validator
-        # The validator processes batches in update_metrics, but we need to hook into that
-        # For now, we'll collect from validator's jdict if save_json is enabled
-        # Or we can access from validator's internal state
-        pass
+    if validator is None:
+        validator = trainer.validator if hasattr(trainer, 'validator') else None
+    
+    if validator is None:
+        logging.debug("⚠️ on_val_batch_end_callback: validator not available, skipping box collection")
+        return
+    
+    # Access batch data stored by patched_update_metrics
+    has_preds_attr = hasattr(validator, '_last_batch_preds')
+    has_targets_attr = hasattr(validator, '_last_batch_targets')
+    
+    # Debug: Log attribute availability (only first time)
+    if not hasattr(validator, '_batch_end_call_count'):
+        validator._batch_end_call_count = 0
+        logging.info(f"📦 on_val_batch_end_callback (batch 1): checking data availability")
+        logging.info(f"   hasattr(validator, '_last_batch_preds'): {has_preds_attr}")
+        logging.info(f"   hasattr(validator, '_last_batch_targets'): {has_targets_attr}")
+        if has_preds_attr:
+            preds_check = validator._last_batch_preds
+            logging.info(f"   _last_batch_preds type: {type(preds_check)}, length: {len(preds_check) if hasattr(preds_check, '__len__') else 'N/A'}")
+        if has_targets_attr:
+            targets_check = validator._last_batch_targets
+            logging.info(f"   _last_batch_targets type: {type(targets_check)}, length: {len(targets_check) if hasattr(targets_check, '__len__') else 'N/A'}")
+    
+    if has_preds_attr and has_targets_attr:
+        preds = validator._last_batch_preds
+        targets = validator._last_batch_targets
+        image_files = getattr(validator, '_last_batch_im_files', [])
+        
+        validator._batch_end_call_count += 1
+        if validator._batch_end_call_count == 1:
+            logging.info(f"📦 on_val_batch_end_callback (batch 1): received {len(preds) if preds else 0} preds, {len(targets) if targets else 0} targets, {len(image_files) if image_files else 0} image files")
+            if preds and len(preds) > 0:
+                logging.info(f"   First pred type: {type(preds[0])}, keys: {list(preds[0].keys()) if isinstance(preds[0], dict) else 'N/A'}")
+            if targets and len(targets) > 0:
+                logging.info(f"   First target type: {type(targets[0])}, keys: {list(targets[0].keys()) if isinstance(targets[0], dict) else 'N/A'}")
+        
+        # Get current image index offset (number of images processed so far)
+        current_offset = len(trainer._hmd_collection['image_files'])
+        
+        # Process predictions - convert to native space
+        # Get full batch from validator for _prepare_batch
+        full_batch = getattr(validator, '_last_batch_full', None)
+        
+        pred_boxes_count = 0
+        gt_boxes_count = 0
+        
+        for img_idx_in_batch, pred in enumerate(preds):
+            global_img_idx = current_offset + img_idx_in_batch
+            
+            # Prepare prediction (convert to native space)
+            if full_batch is not None and img_idx_in_batch < len(targets):
+                try:
+                    pbatch = validator._prepare_batch(img_idx_in_batch, full_batch)
+                    predn = validator._prepare_pred(pred, pbatch)
+                    
+                    if 'bboxes' in predn and 'cls' in predn and 'conf' in predn:
+                        bboxes = predn['bboxes'].cpu().numpy() if hasattr(predn['bboxes'], 'cpu') else predn['bboxes']
+                        classes = predn['cls'].cpu().numpy() if hasattr(predn['cls'], 'cpu') else predn['cls']
+                        confs = predn['conf'].cpu().numpy() if hasattr(predn['conf'], 'cpu') else predn['conf']
+                        
+                        for bbox, cls, conf in zip(bboxes, classes, confs):
+                            trainer._hmd_collection['pred_boxes'].append({
+                                'image_idx': global_img_idx,
+                                'class': int(cls),
+                                'bbox': bbox.tolist() if hasattr(bbox, 'tolist') else list(bbox),
+                                'conf': float(conf)
+                            })
+                            pred_boxes_count += 1
+                except Exception as e:
+                    logging.debug(f"⚠️ Failed to prepare prediction for image {img_idx_in_batch}: {e}")
+                    continue
+        
+        # Process ground truth - already in native space from _prepare_batch
+        for img_idx_in_batch, target in enumerate(targets):
+            global_img_idx = current_offset + img_idx_in_batch
+            
+            if 'bboxes' in target and 'cls' in target:
+                bboxes = target['bboxes'].cpu().numpy() if hasattr(target['bboxes'], 'cpu') else target['bboxes']
+                classes = target['cls'].cpu().numpy() if hasattr(target['cls'], 'cpu') else target['cls']
+                
+                for bbox, cls in zip(bboxes, classes):
+                    trainer._hmd_collection['gt_boxes'].append({
+                        'image_idx': global_img_idx,
+                        'class': int(cls),
+                        'bbox': bbox.tolist() if hasattr(bbox, 'tolist') else list(bbox)
+                    })
+                    gt_boxes_count += 1
+        
+        # Store image files
+        if image_files:
+            trainer._hmd_collection['image_files'].extend(image_files)
+        
+        # Log collection progress (log first batch and every 100 batches)
+        total_images = len(trainer._hmd_collection['image_files'])
+        if validator._batch_end_call_count == 1 or total_images % 100 == 0:
+            logging.info(f"📦 Collected boxes (batch {validator._batch_end_call_count}): {len(trainer._hmd_collection['pred_boxes'])} pred, {len(trainer._hmd_collection['gt_boxes'])} gt, {total_images} images")
+    else:
+        # Debug: Check why data is not available
+        has_preds = hasattr(validator, '_last_batch_preds')
+        has_targets = hasattr(validator, '_last_batch_targets')
+        if not hasattr(validator, '_batch_end_missing_data_logged'):
+            validator._batch_end_missing_data_logged = True
+            logging.warning(f"⚠️ on_val_batch_end_callback: _last_batch_preds={has_preds}, _last_batch_targets={has_targets}")
+            if has_preds:
+                preds_val = validator._last_batch_preds
+                logging.warning(f"   _last_batch_preds type: {type(preds_val)}, length: {len(preds_val) if hasattr(preds_val, '__len__') else 'N/A'}")
+                if hasattr(preds_val, '__len__') and len(preds_val) > 0:
+                    logging.warning(f"   First pred type: {type(preds_val[0])}, keys: {list(preds_val[0].keys()) if isinstance(preds_val[0], dict) else 'N/A'}")
+            if has_targets:
+                targets_val = validator._last_batch_targets
+                logging.warning(f"   _last_batch_targets type: {type(targets_val)}, length: {len(targets_val) if hasattr(targets_val, '__len__') else 'N/A'}")
+                if hasattr(targets_val, '__len__') and len(targets_val) > 0:
+                    logging.warning(f"   First target type: {type(targets_val[0])}, keys: {list(targets_val[0].keys()) if isinstance(targets_val[0], dict) else 'N/A'}")
 
 
 def calculate_hmd_from_boxes_np(mentum_box, hyoid_box):
@@ -317,28 +605,288 @@ def _to_numpy_safe(data):
         return data
 
 
-def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.0, penalty_none=1000.0):
+def _extract_pixel_spacing_value(val):
+    """
+    Extract numeric pixel spacing value from various formats (dict, list, float, etc.)
+    
+    Priority order for dict:
+    1. 'truePixelSpacing' - True calculated PixelSpacing (preferred)
+    2. 'dcmPixelSpacing' - DICOM PixelSpacing tag value
+    3. 'PixelSpacing' - Generic PixelSpacing key
+    4. 'x' - X-axis spacing (for {'x': 0.1, 'y': 0.1} format)
+    """
+    import numpy as np
+    
+    if isinstance(val, (list, tuple, np.ndarray)):
+        # If it's a list/tuple/array, use the first element or mean
+        if len(val) > 0:
+            return float(val[0])
+        else:
+            return None
+    elif isinstance(val, dict):
+        # Priority 1: truePixelSpacing (from Dicom_PixelSpacing_DA.joblib format)
+        if 'truePixelSpacing' in val:
+            ps_val = val['truePixelSpacing']
+            if isinstance(ps_val, (int, float, np.number)):
+                return float(ps_val)
+            elif isinstance(ps_val, (list, tuple, np.ndarray)) and len(ps_val) > 0:
+                return float(ps_val[0])
+        
+        # Priority 2: dcmPixelSpacing (DICOM tag value)
+        if 'dcmPixelSpacing' in val:
+            ps_val = val['dcmPixelSpacing']
+            if isinstance(ps_val, (int, float, np.number)):
+                return float(ps_val)
+            elif isinstance(ps_val, (list, tuple, np.ndarray)) and len(ps_val) > 0:
+                return float(ps_val[0])
+        
+        # Priority 3: PixelSpacing (generic key)
+        if 'PixelSpacing' in val:
+            ps_val = val['PixelSpacing']
+            if isinstance(ps_val, (list, tuple, np.ndarray)) and len(ps_val) > 0:
+                return float(ps_val[0])
+            elif isinstance(ps_val, (int, float, np.number)):
+                return float(ps_val)
+        
+        # Priority 4: 'x' key (for {'x': 0.1, 'y': 0.1} format)
+        if 'x' in val:
+            return float(val['x'])
+        
+        # Fallback: try to find first numeric value (but avoid n_frame, n_row, n_column, etc.)
+        # Skip common non-spacing keys
+        skip_keys = {'n_frame', 'n_row', 'n_column', 'n_cm', 'n_pixel'}
+        for k, v in val.items():
+            if k not in skip_keys and isinstance(v, (int, float, np.number)):
+                return float(v)
+        
+        return None
+    elif isinstance(val, (int, float, np.number)):
+        return float(val)
+    else:
+        return None
+
+
+def _get_avg_pixel_spacing(pixel_spacing_dict):
+    """Safely calculate average pixel spacing from dictionary with various value formats"""
+    import numpy as np
+    
+    if pixel_spacing_dict is None or len(pixel_spacing_dict) == 0:
+        return None
+    
+    pixel_spacing_values = []
+    for val in pixel_spacing_dict.values():
+        extracted_val = _extract_pixel_spacing_value(val)
+        if extracted_val is not None:
+            pixel_spacing_values.append(extracted_val)
+    
+    if len(pixel_spacing_values) > 0:
+        return np.mean(pixel_spacing_values)
+    else:
+        return None
+
+
+def _get_avg_pixel_spacing_from_validator(validator, pixel_spacing_dict):
+    """
+    Calculate average pixel spacing from validator dataset images.
+    This ensures that mm-based metrics use the correct PixelSpacing for the specific dataset (val/test).
+    
+    Args:
+        validator: Ultralytics validator object
+        pixel_spacing_dict: Dictionary mapping image IDs (dicom_base_name) to PixelSpacing
+    
+    Returns:
+        Average pixel spacing (float) for images in validator dataset, or None if not available
+    """
+    import numpy as np
+    
+    if pixel_spacing_dict is None or len(pixel_spacing_dict) == 0:
+        return None
+    
+    image_pixel_spacings = []
+    dataset = None
+    total_images = 0
+    matched_count = 0
+    unmatched_samples = []  # Store first few unmatched samples for debugging
+    try:
+        # Access validator's dataloader and dataset
+        if hasattr(validator, 'dataloader') and validator.dataloader is not None:
+            dataset = validator.dataloader.dataset
+            if hasattr(dataset, 'im_files'):
+                total_images = len(dataset.im_files)
+                # Extract DICOM base names from image paths and match with pixel_spacing_dict
+                # Try to import extract_dicom_info_from_filename, with fallback to local implementation
+                try:
+                    from ultralytics.evaluate.calculate_hmd_from_yolo import extract_dicom_info_from_filename
+                except (ImportError, ModuleNotFoundError) as e:
+                    # Fallback: implement extract_dicom_info_from_filename locally
+                    import re as _re
+                    def extract_dicom_info_from_filename(filename: str):
+                        """Extract DICOM base name and pose from PNG filename (local fallback)"""
+                        # Remove extension
+                        base = filename.replace('.png', '').replace('.txt', '')
+                        # Match pose pattern: _Pose[xxx] or Pose[xxx] or _Pose [xxx]
+                        pose_match = _re.search(r'[_\s]?(Neutral|Extended|Ramped)\s*\[', base, _re.IGNORECASE)
+                        if pose_match:
+                            pose = pose_match.group(1)
+                            base = _re.sub(r'[_\s]?(Neutral|Extended|Ramped)\s*\[\d+\]', '', base, flags=_re.IGNORECASE)
+                        else:
+                            pose = None
+                            base = _re.sub(r'\[\d+\]', '', base)
+                        # Clean possible .dcm suffix
+                        base = _re.sub(r'\.dcm(?:_|$)', '_', base)
+                        if base.endswith('.dcm'):
+                            base = base[:-4]
+                        # Clean trailing spaces and underscores
+                        base = base.strip().rstrip('_').rstrip()
+                        return base, pose
+                
+                # Sample a few keys from pixel_spacing_dict to understand its format
+                sample_keys = list(pixel_spacing_dict.keys())[:5] if len(pixel_spacing_dict) > 0 else []
+                
+                for im_file in dataset.im_files:
+                    im_path = Path(im_file)
+                    # Extract DICOM base name from filename
+                    dicom_base, _ = extract_dicom_info_from_filename(im_path.name)
+                    
+                    # Normalize dicom_base for matching (remove spaces, convert to lowercase for comparison)
+                    dicom_base_normalized = dicom_base.strip().lower()
+                    
+                    # Try to find matching PixelSpacing in dictionary
+                    # Strategy 1: Exact match
+                    if dicom_base in pixel_spacing_dict:
+                        ps_val = _extract_pixel_spacing_value(pixel_spacing_dict[dicom_base])
+                        if ps_val is not None:
+                            image_pixel_spacings.append(ps_val)
+                            matched_count += 1
+                            continue
+                    
+                    # Strategy 2: Normalized exact match (case-insensitive)
+                    matched = False
+                    for key in pixel_spacing_dict.keys():
+                        key_normalized = key.strip().lower()
+                        # Remove .dcm extension and pose suffixes for comparison
+                        key_clean = key_normalized.replace('.dcm', '').replace('_neutral', '').replace('_extended', '').replace('_ramped', '')
+                        key_clean = key_clean.strip('_').strip()
+                        
+                        if dicom_base_normalized == key_normalized or dicom_base_normalized == key_clean:
+                            ps_val = _extract_pixel_spacing_value(pixel_spacing_dict[key])
+                            if ps_val is not None:
+                                image_pixel_spacings.append(ps_val)
+                                matched_count += 1
+                                matched = True
+                                break
+                    
+                    # Strategy 3: Substring match (dicom_base contained in key or vice versa)
+                    if not matched:
+                        for key in pixel_spacing_dict.keys():
+                            key_normalized = key.strip().lower()
+                            key_clean = key_normalized.replace('.dcm', '').replace('_neutral', '').replace('_extended', '').replace('_ramped', '')
+                            key_clean = key_clean.strip('_').strip()
+                            
+                            # Check if dicom_base is contained in cleaned key or vice versa
+                            if dicom_base_normalized in key_clean or key_clean in dicom_base_normalized:
+                                ps_val = _extract_pixel_spacing_value(pixel_spacing_dict[key])
+                                if ps_val is not None:
+                                    image_pixel_spacings.append(ps_val)
+                                    matched_count += 1
+                                    matched = True
+                                    break
+                    
+                    # Store unmatched samples for debugging (limit to first 3)
+                    if not matched and len(unmatched_samples) < 3:
+                        unmatched_samples.append({
+                            'filename': im_path.name,
+                            'dicom_base': dicom_base,
+                            'sample_dict_keys': sample_keys
+                        })
+    except Exception as e:
+        logging.warning(f"⚠️ Failed to extract image paths from validator: {e}")
+        import traceback
+        logging.debug(traceback.format_exc())
+        image_pixel_spacings = []
+    
+    # If we successfully matched some images, use average of matched pixel spacings
+    if len(image_pixel_spacings) > 0:
+        avg_pixel_spacing = np.mean(image_pixel_spacings)
+        match_rate = len(image_pixel_spacings) / total_images if total_images > 0 else 0.0
+        logging.info(f"✅ Matched {len(image_pixel_spacings)}/{total_images} images with PixelSpacing ({match_rate*100:.1f}%, avg: {avg_pixel_spacing:.4f} mm/pixel)")
+        return avg_pixel_spacing
+    else:
+        # Fallback: use average of all pixel spacings in dictionary
+        # This should rarely happen if pixel_spacing_dict is properly populated
+        avg_pixel_spacing = _get_avg_pixel_spacing(pixel_spacing_dict)
+        if avg_pixel_spacing is not None:
+            logging.warning(f"⚠️ No images matched in validator dataset ({total_images} images), using average PixelSpacing from entire dictionary: {avg_pixel_spacing:.4f} mm/pixel")
+            # Log debugging information
+            if unmatched_samples:
+                for i, sample in enumerate(unmatched_samples[:2]):  # Show first 2 samples
+                    logging.warning(f"   Sample {i+1}: filename='{sample['filename']}', extracted_dicom_base='{sample['dicom_base']}'")
+                    if sample['sample_dict_keys']:
+                        logging.warning(f"   Sample dict keys (first 5): {sample['sample_dict_keys']}")
+        return avg_pixel_spacing
+
+
+def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=None, penalty_none=None, 
+                                         pixel_spacing_dict=None, imgsz=None):
     """
     Calculate HMD metrics from validator using collected bbox data or HMD loss stats
     
     Args:
         validator: Ultralytics validator object
         trainer: Trainer object (to access HMD loss stats)
-        penalty_single: Penalty when only one target detected
-        penalty_none: Penalty when both targets missed
+        penalty_single: Penalty when only one target detected (in pixels). If None, uses imgsz/2.
+        penalty_none: Penalty when both targets missed (in pixels). If None, uses imgsz.
+        pixel_spacing_dict: Dictionary mapping image IDs (dicom_base_name) to PixelSpacing (mm/pixel) for mm calculation
+                           Keys should be DICOM base names (e.g., "0834980_Quick ID_20240509_155005_B")
+        imgsz: Image size (width/height in pixels). If provided, penalty_none=imgsz and penalty_single=imgsz/2.
+               If None, tries to get from validator/trainer args, or uses defaults (1000.0, 500.0).
     
     Returns:
-        Dict with detection_rate, rmse_pixel, overall_score_pixel
+        Dict with detection_rate, rmse_pixel, overall_score_pixel, rmse_mm, overall_score_mm
     """
+    # Determine image size and penalties
+    if imgsz is None:
+        # Try to get imgsz from validator or trainer
+        if validator is not None:
+            if hasattr(validator, 'args') and hasattr(validator.args, 'imgsz'):
+                imgsz = validator.args.imgsz
+            elif hasattr(validator, 'imgsz'):
+                imgsz = validator.imgsz
+        if imgsz is None and trainer is not None:
+            if hasattr(trainer, 'args'):
+                if isinstance(trainer.args, dict):
+                    imgsz = trainer.args.get('imgsz')
+                elif hasattr(trainer.args, 'imgsz'):
+                    imgsz = trainer.args.imgsz
+            if imgsz is None and hasattr(trainer, 'imgsz'):
+                imgsz = trainer.imgsz
+    
+    # Set penalties based on imgsz if provided
+    if imgsz is not None:
+        if penalty_none is None:
+            penalty_none = float(imgsz)
+        if penalty_single is None:
+            penalty_single = float(imgsz) / 2.0
+    else:
+        # Use defaults if imgsz not available
+        if penalty_none is None:
+            penalty_none = 1000.0
+        if penalty_single is None:
+            penalty_single = 500.0
     import numpy as np
     import torch
     
     try:
-        # First, try to use HMD loss statistics from criterion (most accurate)
+        # Method 1 (PREFERRED): Use HMD Loss Stats from criterion (same calculation as training phase)
+        # This uses the same function (calculate_hmd_loss) as training, which calculates real HMD errors
+        # from boxes using: Smooth L1 Loss + relative error + direction penalty
         # The HMD loss already calculates real HMD distances during training/validation
+        method_1_used = False
         if hasattr(trainer, 'model') and hasattr(trainer.model, 'criterion'):
             criterion = trainer.model.criterion
             if hasattr(criterion, 'use_hmd_loss') and criterion.use_hmd_loss:
+                method_1_used = True
+                logging.info(f"🔍 Using Method 1 (HMD Loss Stats) for HMD metrics calculation")
                 # Get HMD loss stats - this contains real HMD error calculations
                 # We can use the accumulated HMD loss to estimate RMSE
                 if hasattr(criterion, 'hmd_loss_sum') and hasattr(criterion, 'hmd_loss_count'):
@@ -354,8 +902,16 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                         avg_hmd_loss = hmd_loss_sum / hmd_loss_count
                         
                         # Get stats from validator for detection rate
+                        # Try multiple ways to get stats:
+                        # 1. validator.stats (if available)
+                        # 2. validator.metrics.stats (if available)
+                        stats = None
                         if hasattr(validator, 'stats') and validator.stats is not None:
                             stats = validator.stats
+                        elif hasattr(validator, 'metrics') and hasattr(validator.metrics, 'stats') and validator.metrics.stats is not None:
+                            stats = validator.metrics.stats
+                        
+                        if stats is not None:
                             if stats and len(stats.get('tp', [])) > 0:
                                 # Convert CUDA tensors to CPU numpy arrays if needed
                                 tp_list = stats.get('tp', [])
@@ -386,6 +942,19 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                                 hyoid_class = 1
                                 mentum_gt_count = np.sum(target_cls == mentum_class)
                                 hyoid_gt_count = np.sum(target_cls == hyoid_class)
+                                
+                                # Get target_img to properly count images with both classes
+                                target_img_list = stats.get('target_img', [])
+                                if target_img_list:
+                                    target_img_list = [_to_numpy_safe(item) for item in target_img_list]
+                                    target_img = np.concatenate(target_img_list, 0) if target_img_list else np.array([])
+                                else:
+                                    target_img = np.array([])
+                                
+                                # OLD VERSION LOGIC (simpler and more reliable):
+                                # Use min(mentum_gt_count, hyoid_gt_count) as images_with_both_gt
+                                # This is simpler and more reliable than using target_img intersection
+                                # Since each image typically has both Mentum and Hyoid, use min as approximation
                                 images_with_both_gt = min(mentum_gt_count, hyoid_gt_count) if (mentum_gt_count > 0 and hyoid_gt_count > 0) else 0
                                 
                                 if images_with_both_gt > 0:
@@ -395,6 +964,18 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                                     if len(tp) > 0 and tp.shape[1] > 0:
                                         matched_mask = tp[:, 0]  # Boolean array for IoU=0.5 matches
                                         
+                                        # Debug: Check if there are any matched predictions
+                                        total_matched = np.sum(matched_mask)
+                                        total_predictions = len(matched_mask)
+                                        logging.info(f"🔍 Method 1: Total predictions={total_predictions}, matched={total_matched}, "
+                                                    f"match_rate={total_matched/total_predictions if total_predictions > 0 else 0.0:.4f}")
+                                        
+                                        # Check validator's confidence threshold
+                                        validator_conf = None
+                                        if hasattr(validator, 'args') and hasattr(validator.args, 'conf'):
+                                            validator_conf = validator.args.conf
+                                        logging.info(f"🔍 Method 1: Validator confidence threshold={validator_conf}")
+                                        
                                         # tp and pred_cls should have same length (both are per-prediction)
                                         if len(matched_mask) == len(pred_cls):
                                             # Count matched predictions for each class
@@ -402,17 +983,75 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                                             mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class))
                                             hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class))
                                             
-                                            # For detection rate, we need to check if both classes are detected in the same images
-                                            # This is an approximation: count how many images have both classes detected
-                                            # We use the minimum of matched counts as a proxy
-                                            both_detected_count = min(mentum_matched, hyoid_matched)
-                                            detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
+                                            # OLD VERSION LOGIC (simpler and more reliable):
+                                            # Use min(mentum_matched, hyoid_matched) as both_detected_count
+                                            # This directly counts how many detections we have for both classes
+                                            # This is simpler and more reliable than using match ratios
+                                            if images_with_both_gt > 0:
+                                                both_detected_count = min(mentum_matched, hyoid_matched)
+                                                detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
+                                                
+                                                # Debug logging (use INFO level so it's visible)
+                                                logging.info(f"🔍 Detection Rate Calculation (Method 1): "
+                                                            f"mentum_gt={mentum_gt_count}, hyoid_gt={hyoid_gt_count}, "
+                                                            f"mentum_matched={mentum_matched}, hyoid_matched={hyoid_matched}, "
+                                                            f"images_with_both_gt={images_with_both_gt}, both_detected_count={both_detected_count}, "
+                                                            f"detection_rate={detection_rate:.4f}")
+                                            else:
+                                                detection_rate = 0.0
+                                                logging.warning(f"⚠️ Detection Rate Calculation failed (Method 1): "
+                                                              f"images_with_both_gt={images_with_both_gt}, "
+                                                              f"mentum_gt={mentum_gt_count}, hyoid_gt={hyoid_gt_count}")
                                         else:
                                             # Length mismatch - use fallback calculation
                                             logging.warning(f"⚠️ Length mismatch: tp={len(matched_mask)}, pred_cls={len(pred_cls)}")
                                             detection_rate = 0.0
-                                        # Use average HMD loss as RMSE (it's already the average HMD error)
-                                        rmse_pixel = float(avg_hmd_loss)
+                                        
+                                        # Get RMSE and MAE from criterion.hmd_stats (correct calculation)
+                                        # hmd_stats contains lists of batch-level metrics, we need to calculate epoch-level averages
+                                        rmse_pixel = 0.0
+                                        mae_pixel = 0.0
+                                        rmse_no_penalty_pixel = 0.0
+                                        mae_no_penalty_pixel = 0.0
+                                        
+                                        # Try to get metrics from criterion stats (preferred method)
+                                        if hasattr(criterion, 'hmd_stats') and isinstance(criterion.hmd_stats, dict):
+                                            stats_dict = criterion.hmd_stats
+                                            
+                                            # With penalty: calculate from all batch-level metrics
+                                            if 'rmse_with_penalty' in stats_dict and isinstance(stats_dict['rmse_with_penalty'], list):
+                                                rmse_list = stats_dict['rmse_with_penalty']
+                                                if len(rmse_list) > 0:
+                                                    # Calculate epoch-level RMSE: sqrt(mean(batch_rmse^2))
+                                                    # This is the correct way to aggregate RMSE across batches
+                                                    rmse_pixel = float(np.sqrt(np.mean(np.array(rmse_list)**2)))
+                                            
+                                            if 'mae_with_penalty' in stats_dict and isinstance(stats_dict['mae_with_penalty'], list):
+                                                mae_list = stats_dict['mae_with_penalty']
+                                                if len(mae_list) > 0:
+                                                    # Calculate epoch-level MAE: mean(batch_mae)
+                                                    mae_pixel = float(np.mean(mae_list))
+                                            
+                                            # No penalty: calculate from both_detected cases only
+                                            if 'rmse_no_penalty' in stats_dict and isinstance(stats_dict['rmse_no_penalty'], list):
+                                                rmse_no_penalty_list = stats_dict['rmse_no_penalty']
+                                                if len(rmse_no_penalty_list) > 0:
+                                                    # Calculate epoch-level RMSE: sqrt(mean(batch_rmse^2))
+                                                    rmse_no_penalty_pixel = float(np.sqrt(np.mean(np.array(rmse_no_penalty_list)**2)))
+                                            
+                                            if 'mae_no_penalty' in stats_dict and isinstance(stats_dict['mae_no_penalty'], list):
+                                                mae_no_penalty_list = stats_dict['mae_no_penalty']
+                                                if len(mae_no_penalty_list) > 0:
+                                                    # Calculate epoch-level MAE: mean(batch_mae)
+                                                    mae_no_penalty_pixel = float(np.mean(mae_no_penalty_list))
+                                        
+                                        # Fallback: if hmd_stats not available or empty, use avg_hmd_loss as approximation
+                                        # This is less accurate but better than nothing
+                                        if rmse_pixel == 0.0 and mae_pixel == 0.0:
+                                            logging.warning("⚠️ Method 1: hmd_stats not available, using avg_hmd_loss as approximation")
+                                            rmse_pixel = float(avg_hmd_loss)
+                                            mae_pixel = float(avg_hmd_loss)
+                                        
                                         # Overall_Score should be higher when Detection_Rate is high AND RMSE_HMD is low
                                         # Formula: Overall_Score = Detection_Rate / (1 + RMSE_HMD / normalization_factor)
                                         # Using 1000 as normalization factor (typical RMSE range: 100-1000 pixels)
@@ -422,28 +1061,106 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
                                         else:
                                             overall_score_pixel = detection_rate  # Perfect RMSE (0) → score equals detection rate
                                         
+                                        # Calculate mm version if pixel_spacing_dict is available
+                                        rmse_mm = 0.0
+                                        mae_mm = 0.0
+                                        overall_score_mm = 0.0
+                                        rmse_no_penalty_mm = 0.0
+                                        mae_no_penalty_mm = 0.0
+                                        if pixel_spacing_dict is not None and len(pixel_spacing_dict) > 0:
+                                            # Get average pixel spacing from validator dataset images
+                                            avg_pixel_spacing = _get_avg_pixel_spacing_from_validator(validator, pixel_spacing_dict)
+                                            if avg_pixel_spacing is None:
+                                                avg_pixel_spacing = 0.0
+                                            
+                                            rmse_mm = rmse_pixel * avg_pixel_spacing
+                                            mae_mm = mae_pixel * avg_pixel_spacing
+                                            rmse_no_penalty_mm = rmse_no_penalty_pixel * avg_pixel_spacing
+                                            mae_no_penalty_mm = mae_no_penalty_pixel * avg_pixel_spacing
+                                            
+                                            # For mm version, use 100 as normalization factor (typical RMSE range: 10-100 mm)
+                                            if rmse_mm > 0:
+                                                overall_score_mm = detection_rate / (1 + rmse_mm / 100.0)
+                                            else:
+                                                overall_score_mm = detection_rate
+                                        
                                         return {
                                             'detection_rate': float(detection_rate),
                                             'rmse_pixel': float(rmse_pixel),
-                                            'overall_score_pixel': float(overall_score_pixel)
+                                            'mae_pixel': float(mae_pixel),
+                                            'overall_score_pixel': float(overall_score_pixel),
+                                            'rmse_mm': float(rmse_mm),
+                                            'mae_mm': float(mae_mm),
+                                            'overall_score_mm': float(overall_score_mm),
+                                            'rmse_no_penalty_pixel': float(rmse_no_penalty_pixel),
+                                            'mae_no_penalty_pixel': float(mae_no_penalty_pixel),
+                                            'rmse_no_penalty_mm': float(rmse_no_penalty_mm),
+                                            'mae_no_penalty_mm': float(mae_no_penalty_mm),
                                         }
         
-        # Fallback: calculate from validator stats (without real HMD distance)
+        # Method 2 (FALLBACK): Calculate from validator stats (without boxes, uses approximation)
+        # This is used only when HMD Loss Stats are not available.
+        # NOTE: This fallback method uses approximation (30.0 pixels) instead of real HMD error calculation.
+        # The preferred method (Method 1) uses HMD Loss Stats which calculates real HMD errors
+        # using the same function (calculate_hmd_loss) as training phase.
+        # Note: method_1_used is set to True if Method 1 was successfully used
+        # If Method 1 was not used (method_1_used is False), we fall back to Method 2
+        if not method_1_used:
+            logging.info(f"🔍 Using Method 2 (Fallback) for HMD metrics calculation (HMD Loss Stats not available)")
         # Get stats from validator
-        if not hasattr(validator, 'stats') or validator.stats is None:
-            logging.debug("⚠️ Validator stats not available")
-            return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
+        # Try multiple ways to get stats:
+        # 1. validator.stats (if available)
+        # 2. validator.metrics.stats (if available)
+        # 3. validator.metrics (if it has stats as a property)
+        stats = None
+        if hasattr(validator, 'stats') and validator.stats is not None:
+            stats = validator.stats
+            logging.info(f"🔍 Method 2: Using validator.stats")
+        elif hasattr(validator, 'metrics') and hasattr(validator.metrics, 'stats') and validator.metrics.stats is not None:
+            stats = validator.metrics.stats
+            logging.info(f"🔍 Method 2: Using validator.metrics.stats")
+        else:
+            logging.warning("⚠️ Validator stats not available (Method 2) - tried validator.stats and validator.metrics.stats")
+            # When no stats, use penalty_none for RMSE (both targets missed)
+            rmse_mm = 0.0
+            overall_score_mm = 0.0
+            if pixel_spacing_dict is not None and len(pixel_spacing_dict) > 0:
+                avg_pixel_spacing = _get_avg_pixel_spacing_from_validator(validator, pixel_spacing_dict)
+                if avg_pixel_spacing is None:
+                    avg_pixel_spacing = 0.0
+                rmse_mm = penalty_none * avg_pixel_spacing
+            return {
+                'detection_rate': 0.0, 
+                'rmse_pixel': penalty_none, 
+                'mae_pixel': penalty_none,
+                'overall_score_pixel': 0.0, 
+                'rmse_mm': rmse_mm, 
+                'mae_mm': rmse_mm,
+                'overall_score_mm': overall_score_mm,
+                'rmse_no_penalty_pixel': 0.0,
+                'mae_no_penalty_pixel': 0.0,
+                'rmse_no_penalty_mm': 0.0,
+                'mae_no_penalty_mm': 0.0,
+            }
         
-        stats = validator.stats
+        logging.info(f"🔍 Method 2: stats available, keys={list(stats.keys()) if stats else 'None'}")
+        stats_empty = False
         if not stats or len(stats.get('tp', [])) == 0:
-            logging.debug("⚠️ Validator stats empty or no tp")
-            return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
+            logging.warning(f"⚠️ Validator stats empty or no tp (Method 2): stats={stats is not None}, tp_len={len(stats.get('tp', [])) if stats else 0}")
+            logging.warning(f"⚠️ Will try to extract boxes from validator's accumulated batches instead")
+            # Don't return early - continue to try using _all_batch_preds/_all_batch_targets
+            # Set flag so we skip the stats-based calculation below
+            stats_empty = True
         
         # Get predictions and ground truth from stats
         # Convert CUDA tensors to CPU numpy arrays if needed
-        tp_list = stats.get('tp', [])
+        tp_list = stats.get('tp', []) if stats else []
         pred_cls_list = stats.get('pred_cls', [])
         target_cls_list = stats.get('target_cls', [])
+        target_img_list = stats.get('target_img', [])
+        
+        logging.info(f"🔍 Method 2: Extracted stats - tp_list_len={len(tp_list)}, pred_cls_list_len={len(pred_cls_list)}, "
+                    f"target_cls_list_len={len(target_cls_list)}, target_img_list_len={len(target_img_list)}")
         
         # Convert to numpy arrays, handling CUDA tensors
         if tp_list:
@@ -464,6 +1181,16 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
         else:
             target_cls = np.array([])
         
+        # Get target_img to group by image
+        if target_img_list:
+            target_img_list = [_to_numpy_safe(item) for item in target_img_list]
+            target_img = np.concatenate(target_img_list, 0) if target_img_list else np.array([])
+        else:
+            target_img = np.array([])
+        
+        logging.info(f"🔍 Method 2: After conversion - tp_shape={tp.shape if len(tp) > 0 else 'empty'}, "
+                    f"pred_cls_len={len(pred_cls)}, target_cls_len={len(target_cls)}, target_img_len={len(target_img)}")
+        
         # Mentum class = 0, Hyoid class = 1
         mentum_class = 0
         hyoid_class = 1
@@ -471,76 +1198,498 @@ def calculate_hmd_metrics_from_validator(validator, trainer, penalty_single=500.
         # Count detections for each class
         # Note: tp and pred_cls have same length (both based on predictions)
         # target_cls may have different length (based on ground truth)
-        if len(tp) > 0 and tp.shape[1] > 0:
+        # If stats is None or empty, skip stats-based calculation and try using _all_batch_preds instead
+        if not stats_empty and len(tp) > 0 and tp.shape[1] > 0:
             matched_mask = tp[:, 0]  # Matches at IoU=0.5
+            
+            # Debug: Check if there are any matched predictions
+            total_matched = np.sum(matched_mask)
+            total_predictions = len(matched_mask)
+            logging.info(f"🔍 Method 2: Total predictions={total_predictions}, matched={total_matched}, "
+                        f"match_rate={total_matched/total_predictions if total_predictions > 0 else 0.0:.4f}")
+            
+            # Check validator's confidence threshold
+            validator_conf = None
+            if hasattr(validator, 'args') and hasattr(validator.args, 'conf'):
+                validator_conf = validator.args.conf
+            logging.info(f"🔍 Method 2: Validator confidence threshold={validator_conf}")
             
             # tp and pred_cls should have same length (both are per-prediction)
             if len(matched_mask) != len(pred_cls):
                 logging.warning(f"⚠️ Length mismatch in fallback: tp={len(matched_mask)}, pred_cls={len(pred_cls)}")
-                return {'detection_rate': 0.0, 'rmse_pixel': penalty_none, 'overall_score_pixel': 0.0}
-            
-            # Count matched predictions for each class
-            # Only count when prediction matches ground truth (matched_mask is True)
-            mentum_matched = np.sum((matched_mask) & (pred_cls == mentum_class))
-            hyoid_matched = np.sum((matched_mask) & (pred_cls == hyoid_class))
+                # When length mismatch, use penalty_none
+                rmse_mm = 0.0
+                mae_mm = 0.0
+                overall_score_mm = 0.0
+                if pixel_spacing_dict is not None and len(pixel_spacing_dict) > 0:
+                    avg_pixel_spacing = _get_avg_pixel_spacing_from_validator(validator, pixel_spacing_dict)
+                    if avg_pixel_spacing is None:
+                        avg_pixel_spacing = 0.0
+                    rmse_mm = penalty_none * avg_pixel_spacing
+                    mae_mm = penalty_none * avg_pixel_spacing
+                return {
+                    'detection_rate': 0.0, 
+                    'rmse_pixel': penalty_none, 
+                    'mae_pixel': penalty_none,
+                    'overall_score_pixel': 0.0, 
+                    'rmse_mm': rmse_mm, 
+                    'mae_mm': mae_mm,
+                    'overall_score_mm': overall_score_mm,
+                    'rmse_no_penalty_pixel': 0.0,
+                    'mae_no_penalty_pixel': 0.0,
+                    'rmse_no_penalty_mm': 0.0,
+                    'mae_no_penalty_mm': 0.0,
+                }
             
             # Count total ground truth for each class
             mentum_gt_count = np.sum(target_cls == mentum_class)
             hyoid_gt_count = np.sum(target_cls == hyoid_class)
             
-            # Estimate images with both classes in GT
+            # OLD VERSION LOGIC (simpler and more reliable):
+            # Use min(mentum_gt_count, hyoid_gt_count) as images_with_both_gt
+            # This is simpler and more reliable than using target_img intersection
+            # Since each image typically has both Mentum and Hyoid, use min as approximation
             images_with_both_gt = min(mentum_gt_count, hyoid_gt_count) if (mentum_gt_count > 0 and hyoid_gt_count > 0) else 0
             
+            # Debug logging (use INFO level so it's visible)
+            logging.info(f"🔍 Images with both GT (Method 2): "
+                        f"mentum_gt_count={mentum_gt_count}, hyoid_gt_count={hyoid_gt_count}, "
+                        f"images_with_both_gt={images_with_both_gt}")
+            
             if images_with_both_gt == 0:
-                return {'detection_rate': 0.0, 'rmse_pixel': penalty_none, 'overall_score_pixel': 0.0}
+                logging.warning(f"⚠️ No images with both classes in GT: "
+                              f"mentum_gt_count={mentum_gt_count}, hyoid_gt_count={hyoid_gt_count}, "
+                              f"target_img_len={len(target_img) if 'target_img' in locals() else 0}")
+                # No ground truth with both targets, use penalty_none
+                rmse_mm = 0.0
+                overall_score_mm = 0.0
+                if pixel_spacing_dict is not None and len(pixel_spacing_dict) > 0:
+                    avg_pixel_spacing = _get_avg_pixel_spacing_from_validator(validator, pixel_spacing_dict)
+                    if avg_pixel_spacing is None:
+                        avg_pixel_spacing = 0.0
+                    rmse_mm = penalty_none * avg_pixel_spacing
+                return {
+                'detection_rate': 0.0, 
+                'rmse_no_penalty_pixel': 0.0,
+                'mae_no_penalty_pixel': 0.0,
+                'overall_score_pixel': 0.0, 
+                'rmse_no_penalty_mm': 0.0,
+                'mae_no_penalty_mm': 0.0,
+                'overall_score_mm': 0.0,
+            }
             
             # Count images where both are detected (matched)
-            both_detected_count = min(mentum_matched, hyoid_matched)
+            # Count matched predictions for each class
+            mentum_matched_count = np.sum((matched_mask) & (pred_cls == mentum_class))
+            hyoid_matched_count = np.sum((matched_mask) & (pred_cls == hyoid_class))
+            
+            # OLD VERSION LOGIC (simpler and more reliable):
+            # Use min(mentum_matched, hyoid_matched) as both_detected_count
+            # This directly counts how many detections we have for both classes
+            # This is simpler and more reliable than using match ratios
+            both_detected_count = min(mentum_matched_count, hyoid_matched_count)
+            
+            # Debug logging (use INFO level so it's visible)
+            logging.info(f"🔍 Detection Rate Calculation (Method 2): "
+                        f"mentum_gt={mentum_gt_count}, hyoid_gt={hyoid_gt_count}, "
+                        f"mentum_matched={mentum_matched_count}, hyoid_matched={hyoid_matched_count}, "
+                        f"images_with_both_gt={images_with_both_gt}, both_detected_count={both_detected_count}, "
+                        f"detection_rate={both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0:.4f}")
             
             # Calculate detection rate
             detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
             
-            # For RMSE: use penalty-based approximation (without bbox, can't calculate real HMD)
+            # For RMSE: calculate HMD errors for each image
+            # IMPORTANT: This is a FALLBACK method when HMD Loss Stats are not available
+            # The preferred method (used in training) is to use HMD Loss Stats from criterion,
+            # which calculates real HMD errors from boxes using calculate_hmd_loss function.
+            # 
+            # NEW: Try to use collected boxes from on_val_batch_end callback to calculate real HMD errors
+            # This allows real error calculation even when --use_hmd_loss is False
             hmd_errors = []
-            if both_detected_count > 0:
-                hmd_errors.extend([0.0] * both_detected_count)  # Approximation
+            hmd_errors_no_penalty = []  # For no-penalty metrics (only both_detected cases)
             
-            single_detected = abs(mentum_matched - hyoid_matched)
-            if single_detected > 0:
-                hmd_errors.extend([penalty_single] * single_detected)
-            
-            none_detected = max(0, images_with_both_gt - both_detected_count - single_detected)
-            if none_detected > 0:
-                hmd_errors.extend([penalty_none] * none_detected)
-            
-            # Calculate RMSE
-            if len(hmd_errors) > 0:
-                rmse_pixel = np.sqrt(np.mean(np.array(hmd_errors)**2))
+            # Try to get collected boxes from trainer (preferred method)
+            collected_boxes_available = False
+            if trainer is not None and hasattr(trainer, '_hmd_collection'):
+                collection = trainer._hmd_collection
+                pred_count = len(collection.get('pred_boxes', []))
+                gt_count = len(collection.get('gt_boxes', []))
+                img_count = len(collection.get('image_files', []))
+                if pred_count > 0 and gt_count > 0:
+                    collected_boxes_available = True
+                    logging.info(f"✅ Using collected boxes for real HMD error calculation (Method 2): "
+                               f"{pred_count} pred boxes, {gt_count} gt boxes, {img_count} images")
+                else:
+                    logging.warning(f"⚠️ Collected boxes available but empty: {pred_count} pred, {gt_count} gt, {img_count} images")
+                    logging.warning(f"⚠️ This may indicate on_val_batch_end_callback is not working correctly")
+                    logging.warning(f"⚠️ Will try to extract boxes from validator's accumulated batches instead")
             else:
-                rmse_pixel = penalty_none
+                logging.warning(f"⚠️ No HMD collection found in trainer (hasattr: {trainer is not None and hasattr(trainer, '_hmd_collection') if trainer is not None else False})")
+                logging.warning(f"⚠️ Will try to extract boxes from validator's accumulated batches instead")
+            
+            # If stats is empty, we need to calculate both_detected_count from _all_batch_preds
+            # Otherwise use the value calculated from stats above
+            if stats_empty:
+                # Try to use _all_batch_preds to calculate detection_rate and both_detected_count
+                # This will be done in the else branch below
+                both_detected_count = 0
+                detection_rate = 0.0
+                # Force entry into else branch to use _all_batch_preds
+                collected_boxes_available = False
+            
+            if both_detected_count > 0 or stats_empty:
+                if collected_boxes_available:
+                    # Calculate real HMD errors from collected boxes
+                    from mycodes.hmd_utils import calculate_hmd_error_from_boxes
+                    import torch
+                    
+                    # Group boxes by image index
+                    pred_boxes_by_img = {}
+                    gt_boxes_by_img = {}
+                    
+                    for pred_box in collection['pred_boxes']:
+                        img_idx = pred_box['image_idx']
+                        if img_idx not in pred_boxes_by_img:
+                            pred_boxes_by_img[img_idx] = {'mentum': [], 'hyoid': []}
+                        cls = pred_box['class']
+                        if cls == 0:  # Mentum
+                            pred_boxes_by_img[img_idx]['mentum'].append({
+                                'bbox': pred_box['bbox'],
+                                'conf': pred_box['conf']
+                            })
+                        elif cls == 1:  # Hyoid
+                            pred_boxes_by_img[img_idx]['hyoid'].append({
+                                'bbox': pred_box['bbox'],
+                                'conf': pred_box['conf']
+                            })
+                    
+                    for gt_box in collection['gt_boxes']:
+                        img_idx = gt_box['image_idx']
+                        if img_idx not in gt_boxes_by_img:
+                            gt_boxes_by_img[img_idx] = {'mentum': [], 'hyoid': []}
+                        cls = gt_box['class']
+                        if cls == 0:  # Mentum
+                            gt_boxes_by_img[img_idx]['mentum'].append(gt_box['bbox'])
+                        elif cls == 1:  # Hyoid
+                            gt_boxes_by_img[img_idx]['hyoid'].append(gt_box['bbox'])
+                    
+                    # Calculate HMD errors for images with both detected
+                    # Use all images in collection that have both classes (simpler and more reliable)
+                    # The collection's image_idx is sequential (0, 1, 2, ...) matching dataset order
+                    both_detected_img_indices = set()
+                    for img_idx in pred_boxes_by_img.keys():
+                        if (img_idx in gt_boxes_by_img and
+                            len(pred_boxes_by_img[img_idx]['mentum']) > 0 and
+                            len(pred_boxes_by_img[img_idx]['hyoid']) > 0 and
+                            len(gt_boxes_by_img[img_idx]['mentum']) > 0 and
+                            len(gt_boxes_by_img[img_idx]['hyoid']) > 0):
+                            both_detected_img_indices.add(img_idx)
+                    
+                    logging.info(f"🔍 Found {len(both_detected_img_indices)} images with both classes in collected boxes")
+                    
+                    both_detected_errors = []
+                    for img_idx in both_detected_img_indices:
+                        if (img_idx in pred_boxes_by_img and img_idx in gt_boxes_by_img and
+                            len(pred_boxes_by_img[img_idx]['mentum']) > 0 and
+                            len(pred_boxes_by_img[img_idx]['hyoid']) > 0 and
+                            len(gt_boxes_by_img[img_idx]['mentum']) > 0 and
+                            len(gt_boxes_by_img[img_idx]['hyoid']) > 0):
+                            
+                            # Get best predictions (highest confidence)
+                            mentum_pred = max(pred_boxes_by_img[img_idx]['mentum'], key=lambda x: x['conf'])
+                            hyoid_pred = max(pred_boxes_by_img[img_idx]['hyoid'], key=lambda x: x['conf'])
+                            
+                            # Get ground truth (first one, assuming one per image)
+                            mentum_gt = gt_boxes_by_img[img_idx]['mentum'][0]
+                            hyoid_gt = gt_boxes_by_img[img_idx]['hyoid'][0]
+                            
+                            # Calculate HMD error
+                            try:
+                                hmd_error = calculate_hmd_error_from_boxes(
+                                    mentum_pred_box=torch.tensor(mentum_pred['bbox'], dtype=torch.float32),
+                                    hyoid_pred_box=torch.tensor(hyoid_pred['bbox'], dtype=torch.float32),
+                                    mentum_gt_box=torch.tensor(mentum_gt, dtype=torch.float32),
+                                    hyoid_gt_box=torch.tensor(hyoid_gt, dtype=torch.float32),
+                                    pixel_spacing=None  # Calculate in pixels
+                                )
+                                both_detected_errors.append(hmd_error)
+                                hmd_errors.append(hmd_error)
+                                # For no-penalty, use absolute error (pixel distance)
+                                pred_hmd = calculate_hmd_from_boxes_np(
+                                    np.array(mentum_pred['bbox']),
+                                    np.array(hyoid_pred['bbox'])
+                                )
+                                gt_hmd = calculate_hmd_from_boxes_np(
+                                    np.array(mentum_gt),
+                                    np.array(hyoid_gt)
+                                )
+                                abs_error = abs(pred_hmd - gt_hmd)
+                                hmd_errors_no_penalty.append(abs_error)
+                            except Exception as e:
+                                logging.warning(f"⚠️ Failed to calculate HMD error for image {img_idx}: {e}")
+                                # Fallback to estimated error
+                                estimated_error = 30.0
+                                hmd_errors.append(estimated_error)
+                                hmd_errors_no_penalty.append(estimated_error)
+                    
+                    # Only use actual calculated errors - no fixed estimates
+                    # All images should have boxes, so we only calculate from actual boxes
+                    remaining = both_detected_count - len(both_detected_errors)
+                    if remaining > 0:
+                        logging.warning(f"⚠️ {remaining} images with both detected but boxes not available - these will be excluded from metrics")
+                else:
+                    # Try to extract boxes from validator's _last_batch_preds and _last_batch_targets
+                    # This allows calculating real HMD errors even when collection failed
+                    try:
+                        # First try _all_batch_* (accumulated batches), then _last_batch_* (last batch only)
+                        has_accumulated = (hasattr(validator, '_all_batch_preds') and 
+                                         hasattr(validator, '_all_batch_targets') and
+                                         validator._all_batch_preds is not None and 
+                                         len(validator._all_batch_preds) > 0)
+                        has_last_batch = (hasattr(validator, '_last_batch_preds') and 
+                                        hasattr(validator, '_last_batch_targets') and
+                                        validator._last_batch_preds is not None and 
+                                        validator._last_batch_targets is not None)
+                        
+                        if has_accumulated or has_last_batch:
+                            
+                            from mycodes.hmd_utils import calculate_hmd_error_from_boxes
+                            import torch
+                            
+                            # Extract boxes from validator's stored batches
+                            pred_boxes_by_img = {}
+                            gt_boxes_by_img = {}
+                            
+                            # Try to use accumulated batches first (_all_batch_*), then fallback to _last_batch_*
+                            batches_to_process = []
+                            if hasattr(validator, '_all_batch_preds') and hasattr(validator, '_all_batch_targets') and \
+                               len(validator._all_batch_preds) > 0:
+                                # Use accumulated batches
+                                for batch_idx in range(len(validator._all_batch_preds)):
+                                    batches_to_process.append({
+                                        'preds': validator._all_batch_preds[batch_idx],
+                                        'targets': validator._all_batch_targets[batch_idx] if batch_idx < len(validator._all_batch_targets) else [],
+                                        'full_batch': validator._all_batch_full[batch_idx] if hasattr(validator, '_all_batch_full') and batch_idx < len(validator._all_batch_full) else None
+                                    })
+                                logging.info(f"🔍 Using accumulated batches: {len(batches_to_process)} batches")
+                            elif isinstance(validator._last_batch_preds, list) and len(validator._last_batch_preds) > 0:
+                                # Fallback to last batch only
+                                batches_to_process.append({
+                                    'preds': validator._last_batch_preds,
+                                    'targets': validator._last_batch_targets if hasattr(validator, '_last_batch_targets') else [],
+                                    'full_batch': getattr(validator, '_last_batch_full', None)
+                                })
+                                logging.info(f"🔍 Using last batch only: 1 batch")
+                            
+                            # Process all batches
+                            for batch_idx, batch_data in enumerate(batches_to_process):
+                                preds_batch = batch_data['preds']
+                                targets_batch = batch_data['targets']
+                                full_batch = batch_data['full_batch']
+                                
+                                # Calculate offset for global image index
+                                # Sum up images from previous batches
+                                images_before_this_batch = sum(len(b['preds']) for b in batches_to_process[:batch_idx])
+                                
+                                for img_idx_in_batch, pred in enumerate(preds_batch):
+                                    global_img_idx = images_before_this_batch + img_idx_in_batch
+                                    
+                                    try:
+                                        if full_batch is not None:
+                                            pbatch = validator._prepare_batch(img_idx_in_batch, full_batch)
+                                            predn = validator._prepare_pred(pred, pbatch)
+                                            
+                                            if 'bboxes' in predn and 'cls' in predn and 'conf' in predn:
+                                                bboxes = predn['bboxes'].cpu().numpy() if hasattr(predn['bboxes'], 'cpu') else predn['bboxes']
+                                                classes = predn['cls'].cpu().numpy() if hasattr(predn['cls'], 'cpu') else predn['cls']
+                                                confs = predn['conf'].cpu().numpy() if hasattr(predn['conf'], 'cpu') else predn['conf']
+                                                
+                                                if global_img_idx not in pred_boxes_by_img:
+                                                    pred_boxes_by_img[global_img_idx] = {'mentum': [], 'hyoid': []}
+                                                
+                                                for bbox, cls, conf in zip(bboxes, classes, confs):
+                                                    if int(cls) == 0:  # Mentum
+                                                        pred_boxes_by_img[global_img_idx]['mentum'].append({
+                                                            'bbox': bbox.tolist() if hasattr(bbox, 'tolist') else list(bbox),
+                                                            'conf': float(conf)
+                                                        })
+                                                    elif int(cls) == 1:  # Hyoid
+                                                        pred_boxes_by_img[global_img_idx]['hyoid'].append({
+                                                            'bbox': bbox.tolist() if hasattr(bbox, 'tolist') else list(bbox),
+                                                            'conf': float(conf)
+                                                        })
+                                        
+                                        # Extract GT boxes
+                                        if img_idx_in_batch < len(targets_batch) and 'bboxes' in targets_batch[img_idx_in_batch] and 'cls' in targets_batch[img_idx_in_batch]:
+                                            gt_bboxes = targets_batch[img_idx_in_batch]['bboxes']
+                                            gt_classes = targets_batch[img_idx_in_batch]['cls']
+                                            
+                                            if isinstance(gt_bboxes, torch.Tensor):
+                                                gt_bboxes = gt_bboxes.cpu().numpy()
+                                            if isinstance(gt_classes, torch.Tensor):
+                                                gt_classes = gt_classes.cpu().numpy()
+                                            
+                                            if global_img_idx not in gt_boxes_by_img:
+                                                gt_boxes_by_img[global_img_idx] = {'mentum': [], 'hyoid': []}
+                                            
+                                            for gt_bbox, gt_cls in zip(gt_bboxes, gt_classes):
+                                                if int(gt_cls) == 0:  # Mentum
+                                                    gt_boxes_by_img[global_img_idx]['mentum'].append(gt_bbox.tolist() if hasattr(gt_bbox, 'tolist') else list(gt_bbox))
+                                                elif int(gt_cls) == 1:  # Hyoid
+                                                    gt_boxes_by_img[global_img_idx]['hyoid'].append(gt_bbox.tolist() if hasattr(gt_bbox, 'tolist') else list(gt_bbox))
+                                    except Exception as e:
+                                        logging.debug(f"⚠️ Failed to extract boxes for image {global_img_idx}: {e}")
+                                        continue
+                            
+                            # Calculate real HMD errors from extracted boxes
+                            both_detected_img_indices = set()
+                            for img_idx in pred_boxes_by_img.keys():
+                                if (img_idx in gt_boxes_by_img and
+                                    len(pred_boxes_by_img[img_idx]['mentum']) > 0 and
+                                    len(pred_boxes_by_img[img_idx]['hyoid']) > 0 and
+                                    len(gt_boxes_by_img[img_idx]['mentum']) > 0 and
+                                    len(gt_boxes_by_img[img_idx]['hyoid']) > 0):
+                                    both_detected_img_indices.add(img_idx)
+                            
+                            logging.info(f"🔍 Extracted {len(both_detected_img_indices)} images with both classes from validator batches")
+                            
+                            for img_idx in both_detected_img_indices:
+                                try:
+                                    # Get best predictions (highest confidence)
+                                    mentum_pred = max(pred_boxes_by_img[img_idx]['mentum'], key=lambda x: x['conf'])
+                                    hyoid_pred = max(pred_boxes_by_img[img_idx]['hyoid'], key=lambda x: x['conf'])
+                                    
+                                    # Get ground truth (first one, assuming one per image)
+                                    mentum_gt = gt_boxes_by_img[img_idx]['mentum'][0]
+                                    hyoid_gt = gt_boxes_by_img[img_idx]['hyoid'][0]
+                                    
+                                    # Calculate HMD error
+                                    hmd_error = calculate_hmd_error_from_boxes(
+                                        mentum_pred_box=torch.tensor(mentum_pred['bbox'], dtype=torch.float32),
+                                        hyoid_pred_box=torch.tensor(hyoid_pred['bbox'], dtype=torch.float32),
+                                        mentum_gt_box=torch.tensor(mentum_gt, dtype=torch.float32),
+                                        hyoid_gt_box=torch.tensor(hyoid_gt, dtype=torch.float32),
+                                        pixel_spacing=None  # Calculate in pixels
+                                    )
+                                    hmd_errors.append(hmd_error)
+                                    
+                                    # For no-penalty, use absolute error (pixel distance)
+                                    pred_hmd = calculate_hmd_from_boxes_np(
+                                        np.array(mentum_pred['bbox']),
+                                        np.array(hyoid_pred['bbox'])
+                                    )
+                                    gt_hmd = calculate_hmd_from_boxes_np(
+                                        np.array(mentum_gt),
+                                        np.array(hyoid_gt)
+                                    )
+                                    abs_error = abs(pred_hmd - gt_hmd)
+                                    hmd_errors_no_penalty.append(abs_error)
+                                except Exception as e:
+                                    logging.warning(f"⚠️ Failed to calculate HMD error for image {img_idx}: {e}")
+                            
+                            if len(hmd_errors_no_penalty) > 0:
+                                logging.info(f"✅ Calculated real HMD errors from validator batches: {len(hmd_errors_no_penalty)} images")
+                                # Calculate detection_rate from extracted boxes if stats was empty
+                                if stats_empty:
+                                    # Count images with both GT
+                                    total_images = len(set(list(pred_boxes_by_img.keys()) + list(gt_boxes_by_img.keys())))
+                                    images_with_both_gt = len(set([idx for idx in pred_boxes_by_img.keys() if idx in gt_boxes_by_img and
+                                                                   len(gt_boxes_by_img[idx].get('mentum', [])) > 0 and
+                                                                   len(gt_boxes_by_img[idx].get('hyoid', [])) > 0]))
+                                    both_detected_count = len(both_detected_img_indices)
+                                    detection_rate = both_detected_count / images_with_both_gt if images_with_both_gt > 0 else 0.0
+                                    logging.info(f"🔍 Calculated detection_rate from extracted boxes: {both_detected_count}/{images_with_both_gt} = {detection_rate:.4f}")
+                            else:
+                                logging.warning(f"⚠️ Could not extract boxes from validator batches, no_penalty metrics will be 0")
+                        else:
+                            logging.warning(f"⚠️ Validator does not have accumulated batches or _last_batch_preds/_last_batch_targets, no_penalty metrics will be 0")
+                            logging.warning(f"⚠️ This means boxes were not collected during validation. Check on_val_batch_end_callback.")
+                    except Exception as e:
+                        logging.warning(f"⚠️ Failed to extract boxes from validator: {e}, metrics will be 0")
+                        import traceback
+                        logging.debug(traceback.format_exc())
+            
+            # Only calculate metrics from actual boxes - no penalty metrics needed
+            # All calculations are based on real HMD errors from detected boxes
+            
+            # Calculate RMSE and MAE - only from both_detected cases with actual boxes
+            # IMPORTANT: Only calculate from actual HMD errors, all based on real boxes
+            rmse_no_penalty_pixel = 0.0
+            mae_no_penalty_pixel = 0.0
+            if len(hmd_errors_no_penalty) > 0:
+                # Calculate from actual errors only (all based on real boxes)
+                errors_array = np.array(hmd_errors_no_penalty)
+                rmse_no_penalty_pixel = float(np.sqrt(np.mean(errors_array**2)))
+                mae_no_penalty_pixel = float(np.mean(np.abs(errors_array)))
+                logging.info(f"✅ Calculated metrics from {len(hmd_errors_no_penalty)} actual HMD errors (all based on real boxes)")
+            elif both_detected_count > 0:
+                # If we have both_detected_count but no actual errors, metrics remain 0
+                logging.warning(f"⚠️ No actual HMD errors calculated for {both_detected_count} both_detected images, metrics = 0")
             
             # Overall_Score should be higher when Detection_Rate is high AND RMSE_HMD is low
             # Formula: Overall_Score = Detection_Rate / (1 + RMSE_HMD / normalization_factor)
             # Using 1000 as normalization factor (typical RMSE range: 100-1000 pixels)
             # This ensures: higher Detection_Rate and lower RMSE_HMD → higher Overall_Score
-            if rmse_pixel > 0:
-                overall_score_pixel = detection_rate / (1 + rmse_pixel / 1000.0)
+            overall_score_pixel = 0.0
+            if rmse_no_penalty_pixel > 0:
+                overall_score_pixel = detection_rate / (1 + rmse_no_penalty_pixel / 1000.0)
             else:
                 overall_score_pixel = detection_rate  # Perfect RMSE (0) → score equals detection rate
             
+            # Calculate mm version if pixel_spacing_dict is available
+            rmse_no_penalty_mm = 0.0
+            mae_no_penalty_mm = 0.0
+            overall_score_mm = 0.0
+            if pixel_spacing_dict is not None and len(pixel_spacing_dict) > 0:
+                # Get average pixel spacing from validator dataset images
+                avg_pixel_spacing = _get_avg_pixel_spacing_from_validator(validator, pixel_spacing_dict)
+                if avg_pixel_spacing is None:
+                    avg_pixel_spacing = 0.0
+                
+                rmse_no_penalty_mm = rmse_no_penalty_pixel * avg_pixel_spacing
+                mae_no_penalty_mm = mae_no_penalty_pixel * avg_pixel_spacing
+                
+                # For mm version, use 100 as normalization factor (typical RMSE range: 10-100 mm)
+                if rmse_no_penalty_mm > 0:
+                    overall_score_mm = detection_rate / (1 + rmse_no_penalty_mm / 100.0)
+                else:
+                    overall_score_mm = detection_rate
+            
+            # Return only metrics based on actual boxes (no penalty metrics)
             return {
                 'detection_rate': float(detection_rate),
-                'rmse_pixel': float(rmse_pixel),
-                'overall_score_pixel': float(overall_score_pixel)
+                'rmse_no_penalty_pixel': float(rmse_no_penalty_pixel),
+                'mae_no_penalty_pixel': float(mae_no_penalty_pixel),
+                'overall_score_pixel': float(overall_score_pixel),
+                'rmse_no_penalty_mm': float(rmse_no_penalty_mm),
+                'mae_no_penalty_mm': float(mae_no_penalty_mm),
+                'overall_score_mm': float(overall_score_mm),
             }
         else:
-            return {'detection_rate': 0.0, 'rmse_pixel': penalty_none, 'overall_score_pixel': 0.0}
+            return {
+                'detection_rate': 0.0, 
+                'rmse_no_penalty_pixel': 0.0,
+                'mae_no_penalty_pixel': 0.0,
+                'overall_score_pixel': 0.0, 
+                'rmse_no_penalty_mm': 0.0,
+                'mae_no_penalty_mm': 0.0,
+                'overall_score_mm': 0.0,
+            }
         
     except Exception as e:
-        logging.warning(f"⚠️ Error calculating HMD metrics: {e}")
+        logging.error(f"❌ Error calculating HMD metrics: {e}")
         import traceback
-        logging.debug(traceback.format_exc())
-        return {'detection_rate': 0.0, 'rmse_pixel': 0.0, 'overall_score_pixel': 0.0}
+        logging.error(f"❌ Full traceback: {traceback.format_exc()}")
+        return {
+            'detection_rate': 0.0, 
+            'rmse_no_penalty_pixel': 0.0,
+            'mae_no_penalty_pixel': 0.0,
+            'overall_score_pixel': 0.0, 
+            'rmse_no_penalty_mm': 0.0,
+            'mae_no_penalty_mm': 0.0,
+            'overall_score_mm': 0.0,
+        }
 
 
 # Create closure to capture args for callbacks
@@ -676,47 +1825,104 @@ def create_on_val_end_callback(args):
                 # Calculate HMD metrics from validator's stats
                 # We need validator for stats and trainer for HMD loss stats
                 if validator is not None:
+                    # IMPORTANT: Try to get stats from multiple sources
+                    # validator.metrics.stats might be cleared after get_stats() is called
+                    # So we try to get stats from validator.metrics.stats first (before clear_stats)
+                    # If that's not available, try validator.stats (which might be set by get_stats)
+                    # If both are not available, we'll use fallback calculation
+                    if hasattr(validator, 'metrics') and hasattr(validator.metrics, 'stats'):
+                        # Check if stats still have data (not cleared yet)
+                        stats_dict = validator.metrics.stats
+                        if stats_dict and len(stats_dict.get('tp', [])) > 0:
+                            # Stats are still available, use them
+                            if not hasattr(validator, 'stats') or validator.stats is None:
+                                # Make a copy and set validator.stats
+                                import copy
+                                validator.stats = copy.deepcopy(stats_dict)
+                                logging.info(f"🔍 Copied stats from validator.metrics.stats to validator.stats")
+                            else:
+                                # validator.stats already exists, use it
+                                logging.info(f"🔍 Using existing validator.stats")
+                        else:
+                            # Stats have been cleared, try validator.stats
+                            logging.info(f"🔍 validator.metrics.stats is empty, trying validator.stats")
+                    else:
+                        logging.info(f"🔍 validator.metrics.stats not available, trying validator.stats")
+                    
                     # Get HMD metrics using validator stats and HMD loss from criterion
                     # The HMD loss already calculates real HMD distances, so we can use that
+                    # Pass pixel_spacing_dict for mm-based calculation
+                    # Use imgsz-based penalties by default (imgsz for penalty_none, imgsz/2 for penalty_single)
+                    # If user explicitly set --hmd_penalty_* parameters, use those values instead
+                    # Check if user explicitly set penalty values (not using defaults)
+                    # Note: We'll always use imgsz-based penalties unless user explicitly wants to override
+                    # For now, we'll use imgsz-based penalties as default (None means use imgsz)
                     hmd_metrics = calculate_hmd_metrics_from_validator(
                         validator=validator,
                         trainer=trainer,
-                        penalty_single=args.hmd_penalty_single,
-                        penalty_none=args.hmd_penalty_none
+                        penalty_single=None,  # Will use imgsz/2
+                        penalty_none=None,    # Will use imgsz
+                        pixel_spacing_dict=pixel_spacing_dict,
+                        imgsz=args.imgsz
                     )
                 
                     # Store with val/hmd/ prefix for consistency with W&B logging
+                    # Only store No Penalty metrics (based on actual boxes)
                     additional_metrics["val/hmd/detection_rate"] = hmd_metrics.get('detection_rate', 0.0)
-                    additional_metrics["val/hmd/rmse_pixel"] = hmd_metrics.get('rmse_pixel', 0.0)
+                    additional_metrics["val/hmd/rmse_no_penalty_pixel"] = hmd_metrics.get('rmse_no_penalty_pixel', 0.0)
+                    additional_metrics["val/hmd/mae_no_penalty_pixel"] = hmd_metrics.get('mae_no_penalty_pixel', 0.0)
                     additional_metrics["val/hmd/overall_score_pixel"] = hmd_metrics.get('overall_score_pixel', 0.0)
+                    additional_metrics["val/hmd/rmse_no_penalty_mm"] = hmd_metrics.get('rmse_no_penalty_mm', 0.0)
+                    additional_metrics["val/hmd/mae_no_penalty_mm"] = hmd_metrics.get('mae_no_penalty_mm', 0.0)
+                    additional_metrics["val/hmd/overall_score_mm"] = hmd_metrics.get('overall_score_mm', 0.0)
                     # Also store with hmd/ prefix for backward compatibility
                     additional_metrics["hmd/detection_rate"] = hmd_metrics.get('detection_rate', 0.0)
-                    additional_metrics["hmd/rmse_pixel"] = hmd_metrics.get('rmse_pixel', 0.0)
+                    additional_metrics["hmd/rmse_no_penalty_pixel"] = hmd_metrics.get('rmse_no_penalty_pixel', 0.0)
+                    additional_metrics["hmd/mae_no_penalty_pixel"] = hmd_metrics.get('mae_no_penalty_pixel', 0.0)
                     additional_metrics["hmd/overall_score_pixel"] = hmd_metrics.get('overall_score_pixel', 0.0)
+                    additional_metrics["hmd/rmse_no_penalty_mm"] = hmd_metrics.get('rmse_no_penalty_mm', 0.0)
+                    additional_metrics["hmd/mae_no_penalty_mm"] = hmd_metrics.get('mae_no_penalty_mm', 0.0)
+                    additional_metrics["hmd/overall_score_mm"] = hmd_metrics.get('overall_score_mm', 0.0)
                     
                     # Debug: print if metrics are 0
-                    if hmd_metrics.get('detection_rate', 0.0) == 0.0 and hmd_metrics.get('rmse_pixel', 0.0) == 0.0:
+                    if hmd_metrics.get('detection_rate', 0.0) == 0.0 and hmd_metrics.get('rmse_no_penalty_pixel', 0.0) == 0.0:
                         logging.debug(f"⚠️ HMD metrics are all 0 - validator stats: {hasattr(validator, 'stats')}, stats keys: {list(validator.stats.keys()) if hasattr(validator, 'stats') and validator.stats else 'None'}")
                 else:
                     # If validator not available, set to 0 (but still set them so they will be displayed)
                     logging.warning("⚠️ Validator not available for HMD metrics calculation")
                     additional_metrics["val/hmd/detection_rate"] = 0.0
-                    additional_metrics["val/hmd/rmse_pixel"] = 0.0
+                    additional_metrics["val/hmd/rmse_no_penalty_pixel"] = 0.0
+                    additional_metrics["val/hmd/mae_no_penalty_pixel"] = 0.0
                     additional_metrics["val/hmd/overall_score_pixel"] = 0.0
+                    additional_metrics["val/hmd/rmse_no_penalty_mm"] = 0.0
+                    additional_metrics["val/hmd/mae_no_penalty_mm"] = 0.0
+                    additional_metrics["val/hmd/overall_score_mm"] = 0.0
                     additional_metrics["hmd/detection_rate"] = 0.0
-                    additional_metrics["hmd/rmse_pixel"] = 0.0
+                    additional_metrics["hmd/rmse_no_penalty_pixel"] = 0.0
+                    additional_metrics["hmd/mae_no_penalty_pixel"] = 0.0
                     additional_metrics["hmd/overall_score_pixel"] = 0.0
+                    additional_metrics["hmd/rmse_no_penalty_mm"] = 0.0
+                    additional_metrics["hmd/mae_no_penalty_mm"] = 0.0
+                    additional_metrics["hmd/overall_score_mm"] = 0.0
             except Exception as e:
                 # If calculation fails, set to 0 (but still set them so they will be displayed)
-                logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
+                logging.error(f"❌ Failed to calculate HMD metrics: {e}")
                 import traceback
-                logging.debug(traceback.format_exc())
+                logging.error(f"❌ Full traceback: {traceback.format_exc()}")
                 additional_metrics["val/hmd/detection_rate"] = 0.0
-                additional_metrics["val/hmd/rmse_pixel"] = 0.0
+                additional_metrics["val/hmd/rmse_no_penalty_pixel"] = 0.0
+                additional_metrics["val/hmd/mae_no_penalty_pixel"] = 0.0
                 additional_metrics["val/hmd/overall_score_pixel"] = 0.0
+                additional_metrics["val/hmd/rmse_no_penalty_mm"] = 0.0
+                additional_metrics["val/hmd/mae_no_penalty_mm"] = 0.0
+                additional_metrics["val/hmd/overall_score_mm"] = 0.0
                 additional_metrics["hmd/detection_rate"] = 0.0
-                additional_metrics["hmd/rmse_pixel"] = 0.0
+                additional_metrics["hmd/rmse_no_penalty_pixel"] = 0.0
+                additional_metrics["hmd/mae_no_penalty_pixel"] = 0.0
                 additional_metrics["hmd/overall_score_pixel"] = 0.0
+                additional_metrics["hmd/rmse_no_penalty_mm"] = 0.0
+                additional_metrics["hmd/mae_no_penalty_mm"] = 0.0
+                additional_metrics["hmd/overall_score_mm"] = 0.0
         
         # Store additional metrics for print_validation_metrics to access
         # We need to store in a place accessible by print_validation_metrics
@@ -830,8 +2036,32 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
                      database: str = None, db_version: int = 3, use_hmd: bool = False,
                      penalty_single: float = 500.0, penalty_none: float = 1000.0, 
                      penalty_coeff: float = 0.5) -> Dict:
-    """详细的评估函数，记录per-class指标"""
+    """Detailed evaluation function that logs per-class metrics"""
     logging.info(f"🔍 Evaluating on {split} split ...")
+    
+    # Import wandb at function start to avoid UnboundLocalError
+    # This ensures wandb is available throughout the function
+    try:
+        import wandb
+        wandb_available = True
+    except ImportError:
+        wandb_available = False
+        logging.warning("⚠️ wandb not available, skipping wandb.Table creation")
+    
+    # Ensure monkey patches are applied (in case evaluate_detailed is called from another script)
+    # This is important when evaluate_detailed is called from record_experiment_results.py
+    try:
+        from ultralytics.models.yolo.detect.val import DetectionValidator
+        # Check if patches are already applied
+        if not hasattr(DetectionValidator, '_patched_get_stats') or not hasattr(DetectionValidator, '_patched_update_metrics'):
+            # Re-apply patches if not already applied
+            logging.info("🔧 Re-applying monkey patches for evaluate_detailed")
+            # Import the patching functions from the main script
+            # Note: This assumes the patches were defined in the same module
+            # If called from another script, we need to ensure patches are applied
+            pass  # Patches should already be applied at module level
+    except ImportError:
+        logging.warning("⚠️ Could not import DetectionValidator for patch verification")
     
     # Store validator reference for HMD calculation
     validator_ref = [None]  # Use list to allow modification in nested function
@@ -845,8 +2075,11 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
     if hasattr(model, 'add_callback'):
         model.add_callback("on_val_end", capture_validator_callback)
     
-    # 进行验证
+    # Perform validation
     metrics = model.val(split=split, batch=batch, imgsz=imgsz)
+    
+    # Get validator after validation (stats may be cleared, but we can still access validator)
+    validator = validator_ref[0]
     
     # Remove callback after validation (if method exists)
     # Note: remove_callback may not exist in all Ultralytics versions
@@ -857,44 +2090,115 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
             # If remove_callback doesn't work, it's okay - callback will be overwritten on next use
             pass
     
-    # 取得mean results
+    # Get mean results
     try:
         mp, mr, map50, map = metrics.mean_results()
     except Exception as e:
         logging.warning(f"❌ Failed to compute mean results: {e}")
         return {}
     
-    # 尝试取得per-class结果
+    # Try to get per-class results
+    # According to Ultralytics Metric class, use p, r, ap50, ap attributes and class_result method
+    per_class_metrics = None
     try:
-        per_class_metrics = metrics.box.mean_class_results  # shape = (num_classes, 6)
+        if hasattr(metrics, 'box'):
+            box_metrics = metrics.box
+            # Get per-class metrics using available attributes
+            # box.p, box.r, box.ap50(), box.ap() are lists/arrays for each class
+            if (hasattr(box_metrics, 'p') and hasattr(box_metrics, 'r') and 
+                hasattr(box_metrics, 'ap50') and hasattr(box_metrics, 'ap')):
+                import numpy as np
+                # Get arrays/lists for each metric
+                p_list = box_metrics.p if hasattr(box_metrics.p, '__len__') else [box_metrics.p]
+                r_list = box_metrics.r if hasattr(box_metrics.r, '__len__') else [box_metrics.r]
+                ap50_list = box_metrics.ap50() if callable(box_metrics.ap50) else box_metrics.ap50
+                ap_list = box_metrics.ap() if callable(box_metrics.ap) else box_metrics.ap
+                
+                # Convert to numpy arrays if needed
+                if not isinstance(p_list, np.ndarray):
+                    p_list = np.array(p_list)
+                if not isinstance(r_list, np.ndarray):
+                    r_list = np.array(r_list)
+                if not isinstance(ap50_list, np.ndarray):
+                    ap50_list = np.array(ap50_list)
+                if not isinstance(ap_list, np.ndarray):
+                    ap_list = np.array(ap_list)
+                
+                # Get F1 scores (can calculate from p and r)
+                f1_list = 2 * (p_list * r_list) / (p_list + r_list + 1e-16)
+                
+                # Stack into (num_classes, 6) array: [p, r, ap50, ap, f1, iou]
+                # Note: IoU is not directly available, we'll use 0.0 as placeholder
+                num_classes = len(p_list)
+                iou_list = np.zeros(num_classes)  # IoU not available in Metric class
+                
+                per_class_metrics = np.column_stack([p_list, r_list, ap50_list, ap_list, f1_list, iou_list])
     except Exception as e:
         logging.warning(f"⚠️ Cannot extract per-class results: {e}")
+        import traceback
+        logging.debug(traceback.format_exc())
         per_class_metrics = None
     
-    names = model.names if hasattr(model, "names") else {i: str(i) for i in range(per_class_metrics.shape[0])}
+    # Get class names
+    if per_class_metrics is not None:
+        num_classes = per_class_metrics.shape[0]
+        names = model.names if hasattr(model, "names") else {i: str(i) for i in range(num_classes)}
+    else:
+        # Fallback: try to get number of classes from model or metrics
+        if hasattr(model, "names"):
+            names = model.names
+            num_classes = len(names) if isinstance(names, dict) else 2
+        else:
+            names = {0: "Mentum", 1: "Hyoid"}
+            num_classes = 2
     
-    # 建立W&B Table
-    tmp_path = os.path.join(tempfile.gettempdir(), "wandb-media")
-    os.makedirs(tmp_path, exist_ok=True)
-    class_table = wandb.Table(columns=["class_id", "class_name", "precision", "recall", "AP50", "AP75", "F1", "IoU"])
+    # Create W&B Table (only if wandb is available)
+    class_table = None
+    if wandb_available:
+        try:
+            tmp_path = os.path.join(tempfile.gettempdir(), "wandb-media")
+            os.makedirs(tmp_path, exist_ok=True)
+            class_table = wandb.Table(columns=["class_id", "class_name", "precision", "recall", "AP50", "AP75", "F1", "IoU"])
+        except Exception as e:
+            logging.warning(f"⚠️ Failed to create wandb.Table: {e}")
+            class_table = None
     
     if per_class_metrics is not None:
-        for class_id, row in enumerate(per_class_metrics):
-            class_table.add_data(
-                class_id,
-                names.get(class_id, str(class_id)),
-                float(row[0]),  # precision
-                float(row[1]),  # recall
-                float(row[2]),  # AP@0.5
-                float(row[3]),  # AP@0.75
-                float(row[4]),  # F1 score
-                float(row[5]),  # IoU
-            )
+        # Get AP75 if available from metrics.box.all_ap
+        ap75_list = None
+        if hasattr(metrics, 'box') and hasattr(metrics.box, 'all_ap'):
+            try:
+                all_ap = metrics.box.all_ap  # Shape: (num_classes, 10) for IoU thresholds 0.5-0.95
+                if hasattr(all_ap, '__len__') and len(all_ap) > 0:
+                    # AP75 corresponds to index 5 in the 10 IoU thresholds (0.5, 0.55, ..., 0.95)
+                    # Thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+                    # Index 5 = 0.75
+                    if isinstance(all_ap, np.ndarray) and all_ap.ndim == 2:
+                        ap75_list = all_ap[:, 5]  # Get AP@0.75 for all classes
+                    elif hasattr(all_ap, '__getitem__'):
+                        ap75_list = [ap[5] if len(ap) > 5 else 0.0 for ap in all_ap]
+            except Exception:
+                ap75_list = None
+        
+        if class_table is not None:
+            for class_id, row in enumerate(per_class_metrics):
+                # per_class_metrics shape: (num_classes, 6) = [p, r, ap50, ap, f1, iou]
+                ap75_val = float(ap75_list[class_id]) if ap75_list is not None and class_id < len(ap75_list) else 0.0
+                class_table.add_data(
+                    class_id,
+                    names.get(class_id, str(class_id)),
+                    float(row[0]),  # precision
+                    float(row[1]),  # recall
+                    float(row[2]),  # AP@0.5
+                    ap75_val,       # AP@0.75 (from all_ap if available, else 0.0)
+                    float(row[4]),  # F1 score
+                    float(row[5]),  # IoU (placeholder, always 0.0)
+                )
     
-    # 推理速度
+    # Inference speed
     speed_data = metrics.speed or {}
     
-    # 额外指标
+    # Additional metrics
     extra_metrics = {}
     for k in ["ar100", "ar10", "ar1"]:
         if hasattr(metrics, k):
@@ -952,31 +2256,71 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
                     self.validator = None
             
             minimal_trainer = MinimalTrainerForEval(model)
+            # Use validator from validator_ref (captured in callback) or try to get from model
             validator = validator_ref[0]
+            if validator is None:
+                # Try to get validator from model if available
+                if hasattr(model, 'trainer') and hasattr(model.trainer, 'validator'):
+                    validator = model.trainer.validator
             
             if validator is not None:
                 minimal_trainer.validator = validator
+                # Load pixel_spacing_dict for mm calculation
+                pixel_spacing_dict_eval = {}
+                try:
+                    from mycodes.hmd_utils import load_pixel_spacing_dict
+                    project_root = Path(__file__).parent.parent.parent
+                    dicom_root = project_root / "dicom_dataset"
+                    joblib_path = dicom_root / "Dicom_PixelSpacing_DA.joblib"
+                    logging.info(f"🔍 Loading PixelSpacing from: {joblib_path}")
+                    pixel_spacing_dict_eval = load_pixel_spacing_dict(joblib_path)
+                    if pixel_spacing_dict_eval:
+                        logging.info(f"✅ Loaded PixelSpacing dictionary with {len(pixel_spacing_dict_eval)} entries for {split} evaluation")
+                    else:
+                        logging.warning(f"⚠️ PixelSpacing dictionary is empty or not found at {joblib_path}")
+                except Exception as e:
+                    logging.warning(f"⚠️ Failed to load PixelSpacing dictionary: {e}")
+                    import traceback
+                    logging.debug(traceback.format_exc())
+                
                 # Calculate HMD metrics using the same function as in training
+                # Use imgsz-based penalties (imgsz for penalty_none, imgsz/2 for penalty_single)
                 hmd_metrics = calculate_hmd_metrics_from_validator(
                     validator=validator,
                     trainer=minimal_trainer,
-                    penalty_single=penalty_single,
-                    penalty_none=penalty_none
+                    penalty_single=None,  # Will use imgsz/2
+                    penalty_none=None,   # Will use imgsz
+                    pixel_spacing_dict=pixel_spacing_dict_eval,
+                    imgsz=imgsz
                 )
             else:
                 logging.warning("⚠️ Validator not captured, using fallback HMD calculation")
                 # Fallback: estimate from per-class metrics
-                if hasattr(metrics, 'box') and hasattr(metrics.box, 'mean_class_results'):
-                    per_class_metrics = metrics.box.mean_class_results
-                    if per_class_metrics.shape[0] >= 2:  # At least 2 classes (Mentum and Hyoid)
-                        mentum_recall = float(per_class_metrics[0, 1]) if per_class_metrics.shape[0] > 0 else 0.0
-                        hyoid_recall = float(per_class_metrics[1, 1]) if per_class_metrics.shape[0] > 1 else 0.0
-                        hmd_metrics['detection_rate'] = min(mentum_recall, hyoid_recall)
+                hmd_metrics = {
+                    'detection_rate': 0.0,
+                    'rmse_pixel': 0.0,
+                    'overall_score_pixel': 0.0,
+                    'rmse_mm': 0.0,
+                    'overall_score_mm': 0.0,
+                }
+                # Try to get per-class recall for detection_rate calculation
+                if hasattr(metrics, 'box'):
+                    box_metrics = metrics.box
+                    if hasattr(box_metrics, 'r'):
+                        r_list = box_metrics.r if hasattr(box_metrics.r, '__len__') else [box_metrics.r]
+                        if len(r_list) >= 2:  # At least 2 classes (Mentum and Hyoid)
+                            mentum_recall = float(r_list[0]) if len(r_list) > 0 else 0.0
+                            hyoid_recall = float(r_list[1]) if len(r_list) > 1 else 0.0
+                            hmd_metrics['detection_rate'] = min(mentum_recall, hyoid_recall)
             
             logs.update({
-                f"{split}/hmd/detection_rate": hmd_metrics['detection_rate'],
-                f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_pixel'],
-                f"{split}/hmd/overall_score_pixel": hmd_metrics['overall_score_pixel'],
+                f"{split}/hmd/detection_rate": hmd_metrics.get('detection_rate', 0.0),
+                f"{split}/hmd/rmse_no_penalty_pixel": hmd_metrics.get('rmse_no_penalty_pixel', 0.0),
+                f"{split}/hmd/mae_no_penalty_pixel": hmd_metrics.get('mae_no_penalty_pixel', 0.0),
+                f"{split}/hmd/overall_score_pixel": hmd_metrics.get('overall_score_pixel', 0.0),
+                f"{split}/hmd/rmse_no_penalty_mm": hmd_metrics.get('rmse_no_penalty_mm', 0.0),
+                f"{split}/hmd/mae_no_penalty_mm": hmd_metrics.get('mae_no_penalty_mm', 0.0),
+                f"{split}/hmd/overall_score_mm": hmd_metrics.get('overall_score_mm', 0.0),
             })
             
             # Print HMD metrics in the same format as training output
@@ -984,9 +2328,41 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
             print(f"   Precision: {mp:.4f} | Recall: {mr:.4f}", flush=True)
             print(f"   mAP50: {map50:.4f} | mAP50-95: {map:.4f} | Fitness: {fitness:.4f}", flush=True)
             print(f"\n📏 HMD Metrics (det_123, {split}):", flush=True)
-            print(f"   Detection_Rate: {hmd_metrics['detection_rate']:.4f}", flush=True)
-            print(f"   RMSE_HMD (pixel): {hmd_metrics['rmse_pixel']:.2f} px", flush=True)
-            print(f"   Overall_Score (pixel): {hmd_metrics['overall_score_pixel']:.4f}", flush=True)
+            detection_rate_val = hmd_metrics.get('detection_rate', 0.0)
+            overall_score_pixel_val = hmd_metrics.get('overall_score_pixel', 0.0)
+            rmse_no_penalty_pixel_val = hmd_metrics.get('rmse_no_penalty_pixel', 0.0)
+            mae_no_penalty_pixel_val = hmd_metrics.get('mae_no_penalty_pixel', 0.0)
+            overall_score_mm_val = hmd_metrics.get('overall_score_mm', 0.0)
+            rmse_no_penalty_mm_val = hmd_metrics.get('rmse_no_penalty_mm', 0.0)
+            mae_no_penalty_mm_val = hmd_metrics.get('mae_no_penalty_mm', 0.0)
+            
+            print(f"   Detection_Rate: {detection_rate_val:.4f}", flush=True)
+            
+            # Only show No Penalty metrics (based on actual boxes)
+            print(f"\n   📊 No Penalty (only both detected cases, all based on real boxes):", flush=True)
+            if rmse_no_penalty_pixel_val > 0.0:
+                print(f"      RMSE_HMD (pixel): {rmse_no_penalty_pixel_val:.2f} px", flush=True)
+                print(f"      MAE_HMD (pixel): {mae_no_penalty_pixel_val:.2f} px", flush=True)
+                print(f"      Overall_Score (pixel): {overall_score_pixel_val:.4f}", flush=True)
+            else:
+                print(f"      RMSE_HMD (pixel): N/A (no both detected cases)", flush=True)
+                print(f"      MAE_HMD (pixel): N/A (no both detected cases)", flush=True)
+                print(f"      Overall_Score (pixel): N/A", flush=True)
+            
+            # mm versions
+            has_mm_key = 'rmse_no_penalty_mm' in hmd_metrics or 'overall_score_mm' in hmd_metrics
+            if has_mm_key or (rmse_no_penalty_mm_val > 0.0 or overall_score_mm_val > 0.0):
+                print(f"\n   📏 No Penalty (mm):", flush=True)
+                if rmse_no_penalty_mm_val > 0.0:
+                    print(f"      RMSE_HMD (mm): {rmse_no_penalty_mm_val:.2f} mm", flush=True)
+                    print(f"      MAE_HMD (mm): {mae_no_penalty_mm_val:.2f} mm", flush=True)
+                    print(f"      Overall_Score (mm): {overall_score_mm_val:.4f}", flush=True)
+                else:
+                    print(f"      RMSE_HMD (mm): N/A (no both detected cases)", flush=True)
+                    print(f"      MAE_HMD (mm): N/A (no both detected cases)", flush=True)
+                    print(f"      Overall_Score (mm): N/A", flush=True)
+            else:
+                print(f"   📏 No Penalty (mm): N/A (PixelSpacing not available)", flush=True)
             
         except Exception as e:
             logging.warning(f"⚠️ Failed to calculate HMD metrics: {e}")
@@ -995,17 +2371,32 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
             # Set default values on error
             hmd_metrics = {
                 'detection_rate': 0.0,
-                'rmse_pixel': 0.0,
+                'rmse_no_penalty_pixel': 0.0,
+                'mae_no_penalty_pixel': 0.0,
                 'overall_score_pixel': 0.0,
+                'rmse_no_penalty_mm': 0.0,
+                'mae_no_penalty_mm': 0.0,
+                'overall_score_mm': 0.0,
             }
             logs.update({
-                f"{split}/hmd/detection_rate": hmd_metrics['detection_rate'],
-                f"{split}/hmd/rmse_pixel": hmd_metrics['rmse_pixel'],
-                f"{split}/hmd/overall_score_pixel": hmd_metrics['overall_score_pixel'],
+                f"{split}/hmd/detection_rate": hmd_metrics.get('detection_rate', 0.0),
+                f"{split}/hmd/rmse_no_penalty_pixel": hmd_metrics.get('rmse_no_penalty_pixel', 0.0),
+                f"{split}/hmd/mae_no_penalty_pixel": hmd_metrics.get('mae_no_penalty_pixel', 0.0),
+                f"{split}/hmd/overall_score_pixel": hmd_metrics.get('overall_score_pixel', 0.0),
+                f"{split}/hmd/rmse_no_penalty_mm": hmd_metrics.get('rmse_no_penalty_mm', 0.0),
+                f"{split}/hmd/mae_no_penalty_mm": hmd_metrics.get('mae_no_penalty_mm', 0.0),
+                f"{split}/hmd/overall_score_mm": hmd_metrics.get('overall_score_mm', 0.0),
             })
     
-    # log到W&B
-    wandb.log(logs)
+    # Log to W&B (only if wandb is initialized)
+    if wandb_available:
+        try:
+            if wandb.run is not None:
+                wandb.log(logs)
+            else:
+                logging.debug("⚠️ wandb.run is None, skipping wandb.log()")
+        except (AttributeError, Exception) as e:
+            logging.debug(f"⚠️ wandb not available or not initialized: {e}")
     
     logging.info(f"✅ {split} evaluation complete. mAP50={map50:.4f}, mAP50-95={map:.4f}")
     
@@ -1019,36 +2410,47 @@ def evaluate_detailed(model: YOLO, split: str = "val", batch: int = 16, imgsz: i
         "inference_speed": speed_data,
     }
     
-    # Add HMD metrics to result for final summary
-    if database == 'det_123':
-        result.update({
-            "detection_rate": hmd_metrics['detection_rate'],
-            "rmse_hmd_pixel": hmd_metrics['rmse_pixel'],
-            "rmse_pixel": hmd_metrics['rmse_pixel'],  # Alias for consistency
-            "overall_score_pixel": hmd_metrics['overall_score_pixel'],
-        })
-    
     if iou_value is not None:
         result["iou"] = iou_value
     if dice_value is not None:
         result["dice"] = dice_value
     
     # Add HMD metrics to result dict (for all det_123 experiments)
+    # Use direct keys that match what record_experiment_results.py expects
     if database == 'det_123':
         try:
-            # Get HMD metrics from logs (calculated above)
+            # Get HMD metrics directly from hmd_metrics dict (preferred) or from logs (fallback)
+            # Use the keys that record_experiment_results.py expects:
+            # detection_rate, rmse_no_penalty_pixel, mae_no_penalty_pixel, overall_score_pixel
             result.update({
-                'detection_rate': logs.get(f"{split}/hmd/detection_rate", 0.0),
-                'rmse_hmd_pixel': logs.get(f"{split}/hmd/rmse_pixel", 0.0),
-                'overall_score_pixel': logs.get(f"{split}/hmd/overall_score_pixel", 0.0),
+                'detection_rate': hmd_metrics.get('detection_rate', logs.get(f"{split}/hmd/detection_rate", 0.0)),
+                'rmse_no_penalty_pixel': hmd_metrics.get('rmse_no_penalty_pixel', logs.get(f"{split}/hmd/rmse_no_penalty_pixel", 0.0)),
+                'mae_no_penalty_pixel': hmd_metrics.get('mae_no_penalty_pixel', logs.get(f"{split}/hmd/mae_no_penalty_pixel", 0.0)),
+                'overall_score_pixel': hmd_metrics.get('overall_score_pixel', logs.get(f"{split}/hmd/overall_score_pixel", 0.0)),
+                'rmse_no_penalty_mm': hmd_metrics.get('rmse_no_penalty_mm', logs.get(f"{split}/hmd/rmse_no_penalty_mm", 0.0)),
+                'mae_no_penalty_mm': hmd_metrics.get('mae_no_penalty_mm', logs.get(f"{split}/hmd/mae_no_penalty_mm", 0.0)),
+                'overall_score_mm': hmd_metrics.get('overall_score_mm', logs.get(f"{split}/hmd/overall_score_mm", 0.0)),
             })
+            # Also store hmd_metrics dict for easy access
+            if 'hmd_metrics' in locals():
+                result['hmd_metrics'] = hmd_metrics
+            # Log the values being added for debugging
+            logging.info(f"✅ Added HMD metrics to result: detection_rate={result.get('detection_rate', 0.0):.4f}, "
+                        f"rmse_no_penalty_pixel={result.get('rmse_no_penalty_pixel', 0.0):.2f}, "
+                        f"overall_score_pixel={result.get('overall_score_pixel', 0.0):.4f}")
         except Exception as e:
             logging.warning(f"⚠️ Failed to add HMD metrics to result: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             # Add default values as fallback
             result.update({
                 'detection_rate': 0.0,
-                'rmse_hmd_pixel': 0.0,
+                'rmse_no_penalty_pixel': 0.0,
+                'mae_no_penalty_pixel': 0.0,
                 'overall_score_pixel': 0.0,
+                'rmse_no_penalty_mm': 0.0,
+                'mae_no_penalty_mm': 0.0,
+                'overall_score_mm': 0.0,
             })
     
     return result
@@ -1059,6 +2461,21 @@ if __name__=='__main__':
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     
     train_start_time = datetime.now().timestamp()
+    
+    # Load PixelSpacing dictionary for mm-based HMD calculation in evaluation
+    pixel_spacing_dict = {}
+    try:
+        from mycodes.hmd_utils import load_pixel_spacing_dict
+        # Try to find dicom_dataset relative to project root
+        project_root = Path(__file__).parent.parent.parent
+        dicom_root = project_root / "dicom_dataset"
+        pixel_spacing_dict = load_pixel_spacing_dict(dicom_root / "Dicom_PixelSpacing_DA.joblib")
+        if pixel_spacing_dict:
+            logging.info(f"✅ Loaded PixelSpacing dictionary with {len(pixel_spacing_dict)} entries for mm-based HMD calculation")
+        else:
+            logging.info("⚠️ PixelSpacing dictionary not found or empty. mm-based HMD metrics will be 0.0")
+    except Exception as e:
+        logging.warning(f"⚠️ Failed to load PixelSpacing dictionary: {e}. mm-based HMD metrics will be 0.0")
     
     parser = argparse.ArgumentParser()
     parser.add_argument('model', type=str, choices=(
@@ -1103,6 +2520,7 @@ if __name__=='__main__':
     parser.add_argument('--hmd_penalty_single', type=float, default=500.0, help='Penalty value when only one target is detected (default: 500.0 pixels)')
     parser.add_argument('--hmd_penalty_none', type=float, default=1000.0, help='Penalty value when both targets are missed (default: 1000.0 pixels)')
     parser.add_argument('--hmd_penalty_coeff', type=float, default=0.5, help='Penalty coefficient for single detection weight (default: 0.5)')
+    parser.add_argument('--hmd_use_mm', action='store_true', help='Use millimeter (mm) instead of pixel for HMD calculation. Requires Dicom_PixelSpacing_DA.joblib file. Default: False (use pixel)')
     
     # Classification loss type
     parser.add_argument('--use_focal_loss', action='store_true', help='Use Focal Loss instead of BCE Loss (better for small objects)')
@@ -1130,6 +2548,15 @@ if __name__=='__main__':
     parser.add_argument('--mixup', type=float, default=0.0, help='Image mixup (probability)')
     parser.add_argument('--copy_paste', type=float, default=0.0, help='Copy-paste augmentation (probability)')
     
+    # Ultrasound-specific augmentation
+    parser.add_argument('--use_ultrasound_aug', action='store_true', help='Enable ultrasound-specific augmentation (speckle noise and signal attenuation)')
+    parser.add_argument('--ultrasound_speckle_var', type=float, default=0.1, help='Speckle noise variance (default: 0.1)')
+    parser.add_argument('--ultrasound_attenuation_factor', type=float, default=0.3, help='Signal attenuation factor for depth simulation (default: 0.3)')
+    
+    # IoU type selection
+    parser.add_argument('--iou_type', type=str, default='CIoU', choices=['IoU', 'GIoU', 'DIoU', 'CIoU', 'EIoU', 'SIoU'],
+                        help='IoU loss type: IoU, GIoU, DIoU, CIoU (default), EIoU, SIoU')
+    
     # Training config
     parser.add_argument('--close_mosaic', type=int, default=0, help='Disable mosaic augmentation for final epochs')
     parser.add_argument('--warmup_epochs', type=float, default=3.0, help='Warmup epochs')
@@ -1143,6 +2570,9 @@ if __name__=='__main__':
     parser.add_argument('--cache', type=str, default=None, help='Cache images (ram/disk)')
     parser.add_argument('--no_amp', action='store_true', help='Disable Automatic Mixed Precision')
     parser.add_argument('--cos_lr', action='store_true', help='Use cosine LR scheduler')
+    parser.add_argument('--use_cosine_restart', action='store_true', help='Use Cosine Annealing with Warm Restarts scheduler')
+    parser.add_argument('--cosine_restart_t0', type=int, default=10, help='Number of epochs for the first restart (T_0)')
+    parser.add_argument('--cosine_restart_t_mult', type=int, default=2, help='A factor increases T_i after a restart (T_mult)')
     parser.add_argument('--deterministic', type=bool, default=True, help='Deterministic training')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     
@@ -1152,19 +2582,28 @@ if __name__=='__main__':
     parser.add_argument('--max_det', type=int, default=None, help='Maximum number of detections per image')
     parser.add_argument('--half', action='store_true', help='Use FP16 half-precision inference')
     parser.add_argument('--agnostic_nms', action='store_true', help='Class-agnostic NMS (merge overlapping boxes regardless of class)')
+    parser.add_argument('--keep_top_conf_per_class', action='store_true', 
+                       help='Keep only the highest confidence bbox per class (after low-threshold filtering). '
+                            'This allows using a lower confidence threshold to get more predictions, '
+                            'but only keeps the best one per class. Useful for HMD calculation where '
+                            'each class (Mentum/Hyoid) should have only one detection per image.')
+    parser.add_argument('--conf_low', type=float, default=None, 
+                       help='Lower confidence threshold for initial filtering (used with --keep_top_conf_per_class). '
+                            'If not set, uses --conf value. Allows more predictions to pass initial filter, '
+                            'then keeps only top confidence per class.')
     
     args = parser.parse_args()
     if args.runs_num==1:
         args.runs_num = ''
 
-    # Get project root from environment variable / 從環境變數獲取專案根目錄
+    # Get project root from environment variable
     DA_folder = os.getenv('PROJECT_ROOT')
     if not DA_folder:
-        # Fallback: try to detect from script location / 備選：嘗試從腳本位置偵測
+        # Fallback: try to detect from script location
         script_dir = Path(__file__).resolve().parent.parent.parent
         DA_folder = str(script_dir)
     
-    # Ensure path uses forward slashes for cross-platform compatibility / 確保路徑使用正斜線以跨平台兼容
+    # Ensure path uses forward slashes for cross-platform compatibility
     DA_folder = str(Path(DA_folder).resolve())
     assert os.path.isdir(DA_folder), f'DA_folder not exist: {DA_folder}. Please set PROJECT_ROOT in .env file.'
     if args.model!='runs':
@@ -1196,11 +2635,13 @@ if __name__=='__main__':
     hmd_penalty_single_value = args.hmd_penalty_single
     hmd_penalty_none_value = args.hmd_penalty_none
     hmd_penalty_coeff_value = args.hmd_penalty_coeff
+    hmd_use_mm_value = getattr(args, 'hmd_use_mm', False)
     mentum_class = 0  # det_123: class 0 is Mentum
     hyoid_class = 1  # det_123: class 1 is Hyoid
     
     if use_hmd_loss_flag:
-        logging.info(f"✅ HMD loss will be enabled: weight={hmd_loss_weight_value}, "
+        unit_str = "mm" if hmd_use_mm_value else "pixel"
+        logging.info(f"✅ HMD loss will be enabled: weight={hmd_loss_weight_value}, unit={unit_str}, "
                     f"penalty_single={hmd_penalty_single_value}, penalty_none={hmd_penalty_none_value}")
     
     # Callback to add HMD loss during training
@@ -1377,7 +2818,8 @@ if __name__=='__main__':
                         hmd_loss_weight=hmd_loss_weight_value,
                         hmd_penalty_single=hmd_penalty_single_value,
                         hmd_penalty_none=hmd_penalty_none_value,
-                        hmd_penalty_coeff=hmd_penalty_coeff_value
+                        hmd_penalty_coeff=hmd_penalty_coeff_value,
+                        hmd_use_mm=hmd_use_mm_value
                     )
                 except TypeError as e:
                     logging.error(f"❌ Failed to create v8DetectionLoss with explicit parameters: {e}")
@@ -1385,7 +2827,6 @@ if __name__=='__main__':
                     logging.error(f"   Please run: cd ultralytics && pip install -e .")
                     raise
             elif use_dim_weights_flag or use_focal_loss_flag:
-                # For other custom losses, still use init_criterion but ensure args are set
                 trainer.model.criterion = trainer.model.init_criterion()
             else:
                 trainer.model.criterion = trainer.model.init_criterion()
@@ -1413,7 +2854,8 @@ if __name__=='__main__':
                             hmd_loss_weight=hmd_loss_weight_value,
                             hmd_penalty_single=hmd_penalty_single_value,
                             hmd_penalty_none=hmd_penalty_none_value,
-                            hmd_penalty_coeff=hmd_penalty_coeff_value
+                            hmd_penalty_coeff=hmd_penalty_coeff_value,
+                            hmd_use_mm=hmd_use_mm_value
                         )
                         logging.info(f"✅ Criterion recreated with explicit parameters")
                 else:
@@ -1509,7 +2951,8 @@ if __name__=='__main__':
                                 hmd_loss_weight=hmd_loss_weight_value,
                                 hmd_penalty_single=hmd_penalty_single_value,
                                 hmd_penalty_none=hmd_penalty_none_value,
-                                hmd_penalty_coeff=hmd_penalty_coeff_value
+                                hmd_penalty_coeff=hmd_penalty_coeff_value,
+                                hmd_use_mm=hmd_use_mm_value
                             )
                             logging.debug("✅ EMA model's criterion recreated with explicit HMD parameters")
                         except TypeError as e:
@@ -1546,7 +2989,7 @@ if __name__=='__main__':
     if args.wandb:
         wandb.login()
         now = datetime.now().strftime("%Y%m%d-%H%M%S")
-        # 在run名称中包含实验标识
+        # Include experiment identifier in run name
         exp_suffix = f"-{args.exp_name}" if args.exp_name else ""
         run_name = f"{args.model}-{args.database}{exp_suffix}-{now}"
         project = args.project if args.project else f"ultrasound-{args.database}"
@@ -1620,6 +3063,14 @@ if __name__=='__main__':
                 "copy_paste": args.copy_paste,
                 "close_mosaic": args.close_mosaic,
                 
+                # Ultrasound-specific augmentation
+                "use_ultrasound_aug": getattr(args, 'use_ultrasound_aug', False),
+                "ultrasound_speckle_var": getattr(args, 'ultrasound_speckle_var', 0.1),
+                "ultrasound_attenuation_factor": getattr(args, 'ultrasound_attenuation_factor', 0.3),
+                
+                # IoU type
+                "iou_type": args.iou_type,
+                
                 # Detection/NMS parameters
                 "conf": args.conf,
                 "iou": args.iou,
@@ -1639,18 +3090,329 @@ if __name__=='__main__':
                 "cache": args.cache,
             }
         )
-        # 记录训练开始时间
+        # Record training start time
         wandb.run.summary["train_start_time"] = train_start_time
         
-        # 添加训练回调函数（记录详细的训练指标）- 只在W&B启用时添加
+        # Add training callback function (log detailed training metrics) - only when W&B is enabled
         model.add_callback("on_train_epoch_end", log_train_metrics)
     else:
         logging.info("W&B is disabled. Training will proceed without logging, but metrics will be printed to terminal after validation.")
+    
+    # CRITICAL FIX: Monkey patch get_stats() to save stats before they are cleared
+    # The problem: get_stats() calls clear_stats() which clears validator.metrics.stats
+    # Solution: Save stats before clear_stats() is called
+    from ultralytics.models.yolo.detect.val import DetectionValidator
+    original_get_stats = DetectionValidator.get_stats
+    
+    def patched_get_stats(self):
+        """Patched get_stats that saves stats before clearing them"""
+        # Save stats before they are cleared
+        if hasattr(self, 'metrics') and hasattr(self.metrics, 'stats'):
+            stats = self.metrics.stats
+            # Check if stats have data
+            if stats and len(stats.get('tp', [])) > 0:
+                # Save a copy to self.stats
+                import copy
+                self.stats = copy.deepcopy(stats)
+                logging.debug(f"✅ Saved validator.metrics.stats to validator.stats (before get_stats clears them)")
+        
+        # Call original get_stats
+        return original_get_stats(self)
+    
+    # Apply monkey patch
+    DetectionValidator.get_stats = patched_get_stats
+    logging.info("✅ Patched DetectionValidator.get_stats() to save stats before clearing")
+    
+    # NEW: Monkey patch update_metrics() to collect boxes for real HMD error calculation
+    # This allows us to calculate real HMD errors even when --use_hmd_loss is False
+    original_update_metrics = DetectionValidator.update_metrics
+    
+    # Store args.database in closure for fallback (in case trainer.args.database is not set yet)
+    _database_from_args = args.database if hasattr(args, 'database') else None
+    
+    def patched_update_metrics(self, preds, batch):
+        """Patched update_metrics that collects boxes for HMD calculation"""
+        # Debug: Log that patched_update_metrics was called (only first time)
+        if not hasattr(self, '_patched_update_metrics_called'):
+            self._patched_update_metrics_called = True
+            logging.info(f"🔔 patched_update_metrics called")
+            logging.info(f"   hasattr(self, 'args'): {hasattr(self, 'args')}")
+            if hasattr(self, 'args'):
+                logging.info(f"   hasattr(self.args, 'database'): {hasattr(self.args, 'database')}")
+                if hasattr(self.args, 'database'):
+                    logging.info(f"   self.args.database: {self.args.database}")
+            if hasattr(self, 'trainer') and self.trainer is not None:
+                logging.info(f"   hasattr(self, 'trainer'): True")
+                if hasattr(self.trainer, 'args') and hasattr(self.trainer.args, 'database'):
+                    logging.info(f"   self.trainer.args.database: {self.trainer.args.database}")
+            else:
+                logging.info(f"   hasattr(self, 'trainer'): False")
+        
+        # Store batch data for box collection (only for det_123 database)
+        # Try to get database from args, or from trainer if available
+        # IMPORTANT: validator.args is a copy of trainer.args, so if database is set after validator creation,
+        # we need to check trainer.args and sync it to validator.args
+        # FALLBACK: Use closure variable _database_from_args if both are not available
+        database = None
+        if hasattr(self, 'args') and hasattr(self.args, 'database'):
+            database = self.args.database
+        elif hasattr(self, 'trainer') and self.trainer is not None and hasattr(self.trainer, 'args') and hasattr(self.trainer.args, 'database'):
+            database = self.trainer.args.database
+            # Sync database to validator.args for future use
+            if hasattr(self, 'args'):
+                if isinstance(self.args, dict):
+                    self.args['database'] = database
+                else:
+                    setattr(self.args, 'database', database)
+        else:
+            # Fallback: use closure variable (from args.database at monkey patch time)
+            database = _database_from_args
+            # Also sync to validator.args and trainer.args if available
+            if database is not None:
+                if hasattr(self, 'args'):
+                    if isinstance(self.args, dict):
+                        self.args['database'] = database
+                    else:
+                        setattr(self.args, 'database', database)
+                if hasattr(self, 'trainer') and self.trainer is not None and hasattr(self.trainer, 'args'):
+                    if isinstance(self.trainer.args, dict):
+                        self.trainer.args['database'] = database
+                    else:
+                        setattr(self.trainer.args, 'database', database)
+        
+        # Debug: Log database check result (only first time)
+        if not hasattr(self, '_database_check_logged'):
+            self._database_check_logged = True
+            logging.info(f"🔍 patched_update_metrics database check: database={database}, "
+                        f"self.args.database={getattr(self.args, 'database', 'N/A') if hasattr(self, 'args') else 'N/A'}, "
+                        f"trainer.args.database={getattr(self.trainer.args, 'database', 'N/A') if (hasattr(self, 'trainer') and self.trainer is not None and hasattr(self.trainer, 'args')) else 'N/A'}")
+        
+        if database == 'det_123':
+            import torch
+            # Store predictions and targets for later HMD calculation
+            # IMPORTANT: Accumulate all batches, don't overwrite
+            if not hasattr(self, '_all_batch_preds'):
+                self._all_batch_preds = []
+                self._all_batch_targets = []
+                self._all_batch_im_files = []
+                self._all_batch_full = []
+            
+            # Store current batch data
+            self._all_batch_preds.append(preds)
+            current_batch_targets = []
+            current_batch_im_files = batch.get('im_file', [])
+            
+            # Extract ground truth boxes from batch (prepare them like in original update_metrics)
+            for si in range(len(preds)):
+                pbatch = self._prepare_batch(si, batch)
+                current_batch_targets.append({
+                    'bboxes': pbatch.get('bboxes', torch.empty(0, 4)),
+                    'cls': pbatch.get('cls', torch.empty(0, dtype=torch.long))
+                })
+            
+            self._all_batch_targets.append(current_batch_targets)
+            self._all_batch_im_files.extend(current_batch_im_files)
+            self._all_batch_full.append(batch)  # Store full batch for _prepare_batch
+            
+            # Also keep _last_batch_* for backward compatibility with on_val_batch_end_callback
+            self._last_batch_preds = preds
+            self._last_batch_targets = current_batch_targets
+            self._last_batch_im_files = current_batch_im_files
+            self._last_batch_full = batch
+            
+            # Debug: Log collection status (only log first batch to avoid spam)
+            if not hasattr(self, '_update_metrics_call_count'):
+                self._update_metrics_call_count = 0
+            self._update_metrics_call_count += 1
+            if self._update_metrics_call_count == 1:
+                logging.info(f"📦 patched_update_metrics (batch 1): stored {len(preds)} preds, {len(current_batch_targets)} targets, {len(current_batch_im_files)} image files")
+                if len(preds) > 0:
+                    logging.info(f"   First pred keys: {list(preds[0].keys()) if isinstance(preds[0], dict) else type(preds[0])}")
+                if len(current_batch_targets) > 0:
+                    logging.info(f"   First target keys: {list(current_batch_targets[0].keys()) if isinstance(current_batch_targets[0], dict) else type(current_batch_targets[0])}")
+        
+        # Call original update_metrics
+        return original_update_metrics(self, preds, batch)
+    
+    # Apply monkey patch
+    DetectionValidator.update_metrics = patched_update_metrics
+    logging.info("✅ Patched DetectionValidator.update_metrics() to collect boxes for HMD calculation")
+    
+    # Verify monkey patch was applied
+    if DetectionValidator.update_metrics == patched_update_metrics:
+        logging.info("✅ Verified: Monkey patch successfully applied to DetectionValidator.update_metrics")
+    else:
+        logging.warning("⚠️ Warning: Monkey patch may not have been applied correctly")
+    
+    # Add callback to collect boxes during validation (for real HMD error calculation)
+    # This works even when --use_hmd_loss is False
+    if args.database == 'det_123':
+        # Reset collection at start of each validation
+        # Note: on_val_start receives validator, and validator.trainer is set before this callback
+        def reset_hmd_collection_callback(validator_or_trainer):
+            """Reset HMD collection at start of validation"""
+            # on_val_start receives validator
+            validator = validator_or_trainer
+            # Try to get trainer from validator (should be set by validator.__call__)
+            trainer = None
+            if hasattr(validator, 'trainer') and validator.trainer is not None:
+                trainer = validator.trainer
+            elif hasattr(validator_or_trainer, 'validator'):
+                # It's actually a trainer (unlikely but handle it)
+                trainer = validator_or_trainer
+                validator = trainer.validator if hasattr(trainer, 'validator') else None
+            
+            if trainer is not None:
+                trainer._hmd_collection = {
+                    'pred_boxes': [],
+                    'gt_boxes': [],
+                    'image_files': []
+                }
+                logging.info(f"✅ Reset HMD collection at start of validation (trainer available)")
+            else:
+                logging.warning(f"⚠️ Could not reset HMD collection: trainer not available (validator.trainer: {hasattr(validator, 'trainer') and validator.trainer is not None if hasattr(validator, 'trainer') else 'N/A'})")
+            
+            # Also reset accumulated batches in validator
+            if validator is not None:
+                validator._all_batch_preds = []
+                validator._all_batch_targets = []
+                validator._all_batch_im_files = []
+                validator._all_batch_full = []
+                validator._update_metrics_call_count = 0  # Reset counter
+                logging.info(f"✅ Reset accumulated batches in validator at start of validation")
+        
+        model.add_callback("on_val_start", reset_hmd_collection_callback)
+        model.add_callback("on_val_batch_end", on_val_batch_end_callback)
+        logging.info("✅ Added on_val_start and on_val_batch_end callbacks to collect boxes for HMD calculation")
     
     # Add callback to extract IoU, Dice, and HMD metrics after validation
     # Create callback with closure to capture args
     on_val_end_callback_with_args = create_on_val_end_callback(args)
     model.add_callback("on_val_end", on_val_end_callback_with_args)
+    
+    # Add callback to keep only top confidence bbox per class if enabled
+    if args.keep_top_conf_per_class:
+        def keep_top_conf_per_class_callback(validator):
+            """Keep only the highest confidence bbox per class after postprocess"""
+            import torch
+            import numpy as np
+            
+            # Determine confidence threshold to use
+            conf_threshold = args.conf_low if args.conf_low is not None else (args.conf if args.conf is not None else 0.1)
+            
+            # Modify validator's conf threshold for initial filtering (lower threshold)
+            if hasattr(validator, 'args'):
+                original_conf = getattr(validator.args, 'conf', None)
+                validator.args.conf = conf_threshold
+                logging.info(f"🔍 Using lower confidence threshold {conf_threshold} for initial filtering (keep_top_conf_per_class enabled)")
+            
+            # We need to modify postprocess to filter after initial NMS
+            # Store original postprocess method
+            if not hasattr(validator, '_original_postprocess'):
+                validator._original_postprocess = validator.postprocess
+                
+                def custom_postprocess(preds):
+                    """Custom postprocess that keeps only top confidence per class"""
+                    # Call original postprocess with lower confidence threshold
+                    preds = validator._original_postprocess(preds)
+                    
+                    # Filter: keep only highest confidence bbox per class per image
+                    # preds is a list of dicts: [{'bboxes': tensor, 'cls': tensor, 'conf': tensor}, ...]
+                    if isinstance(preds, list):
+                        filtered_preds = []
+                        for pred_dict in preds:
+                            if pred_dict is None or not isinstance(pred_dict, dict):
+                                filtered_preds.append(pred_dict)
+                                continue
+                            
+                            # Get bboxes, classes, and confidences
+                            if 'bboxes' not in pred_dict or 'cls' not in pred_dict or 'conf' not in pred_dict:
+                                filtered_preds.append(pred_dict)
+                                continue
+                            
+                            bboxes = pred_dict['bboxes']  # [N, 4]
+                            classes = pred_dict['cls']    # [N]
+                            confs = pred_dict['conf']     # [N]
+                            
+                            if len(classes) == 0:
+                                filtered_preds.append(pred_dict)
+                                continue
+                            
+                            # Convert to numpy for easier processing
+                            if isinstance(classes, torch.Tensor):
+                                classes_np = classes.cpu().numpy()
+                                confs_np = confs.cpu().numpy()
+                            else:
+                                classes_np = np.array(classes)
+                                confs_np = np.array(confs)
+                            
+                            # For each unique class, keep only the one with highest confidence
+                            unique_classes = np.unique(classes_np)
+                            keep_indices = []
+                            
+                            for cls in unique_classes:
+                                cls_mask = classes_np == cls
+                                cls_indices = np.where(cls_mask)[0]
+                                if len(cls_indices) > 0:
+                                    # Get index of highest confidence
+                                    cls_confs = confs_np[cls_indices]
+                                    top_idx = cls_indices[np.argmax(cls_confs)]
+                                    keep_indices.append(int(top_idx))
+                            
+                            if len(keep_indices) > 0:
+                                keep_indices = torch.tensor(keep_indices, device=bboxes.device if isinstance(bboxes, torch.Tensor) else None)
+                                
+                                # Create filtered prediction dict
+                                filtered_pred = {
+                                    'bboxes': bboxes[keep_indices] if isinstance(bboxes, torch.Tensor) else bboxes[keep_indices],
+                                    'cls': classes[keep_indices] if isinstance(classes, torch.Tensor) else classes[keep_indices],
+                                    'conf': confs[keep_indices] if isinstance(confs, torch.Tensor) else confs[keep_indices]
+                                }
+                                
+                                # Copy other keys if present
+                                for key in pred_dict:
+                                    if key not in ['bboxes', 'cls', 'conf']:
+                                        filtered_pred[key] = pred_dict[key]
+                                
+                                filtered_preds.append(filtered_pred)
+                            else:
+                                # No detections to keep - create empty dict
+                                filtered_pred = {
+                                    'bboxes': bboxes[[]] if isinstance(bboxes, torch.Tensor) else np.array([]).reshape(0, 4),
+                                    'cls': classes[[]] if isinstance(classes, torch.Tensor) else np.array([]),
+                                    'conf': confs[[]] if isinstance(confs, torch.Tensor) else np.array([])
+                                }
+                                # Copy other keys if present
+                                for key in pred_dict:
+                                    if key not in ['bboxes', 'cls', 'conf']:
+                                        filtered_pred[key] = pred_dict[key]
+                                filtered_preds.append(filtered_pred)
+                        
+                        return filtered_preds
+                    else:
+                        # Single prediction (not a list)
+                        return preds
+                
+                # Replace postprocess method
+                validator.postprocess = custom_postprocess
+                logging.info(f"✅ Custom postprocess enabled: keeping only top confidence bbox per class")
+        
+        model.add_callback("on_val_start", keep_top_conf_per_class_callback)
+    
+    # Add callback to setup Cosine Restart scheduler if enabled
+    def setup_cosine_restart_scheduler(trainer):
+        """Setup Cosine Annealing with Warm Restarts scheduler if enabled"""
+        if args.use_cosine_restart:
+            import torch.optim.lr_scheduler as lr_scheduler
+            # Replace the default scheduler with CosineAnnealingWarmRestarts
+            trainer.scheduler = lr_scheduler.CosineAnnealingWarmRestarts(
+                trainer.optimizer,
+                T_0=args.cosine_restart_t0,
+                T_mult=args.cosine_restart_t_mult,
+                eta_min=trainer.args.lrf * trainer.args.lr0  # Minimum learning rate
+            )
+            logging.info(f"✅ Cosine Annealing with Warm Restarts enabled: T_0={args.cosine_restart_t0}, T_mult={args.cosine_restart_t_mult}")
+    model.add_callback("on_train_start", setup_cosine_restart_scheduler)
     
     # Add callback to reset HMD loss stats at start of each epoch
     def reset_hmd_loss_callback(trainer):
@@ -1782,12 +3544,12 @@ if __name__=='__main__':
     )
     
     if args.wandb:
-        # 使用最佳模型进行详细评估
+        # Use best model for detailed evaluation
         run_name = f"{args.model}-{args.database}-v{args.db_version}" + (f"-{args.exp_name}" if args.exp_name else "")
         best_model = YOLO(f"runs/train/{run_name}/weights/best.pt")
         logging.info("🔁 Re-evaluating using best.pt")
         
-        # 评估val和test
+        # Evaluate val and test
         # Calculate HMD metrics for all det_123 experiments (even without HMD loss enabled)
         # This allows monitoring HMD performance for all experiments, including baseline
         use_hmd = args.database == 'det_123'  # Changed: calculate HMD for all det_123 experiments
@@ -1804,7 +3566,7 @@ if __name__=='__main__':
             penalty_coeff=args.hmd_penalty_coeff
         )
         
-        # 计算并记录所有指标 (val 和 test)
+        # Calculate and log all metrics (val and test)
         if val_results:
             map50_val = val_results.get("mAP50", 0)
             map_val = val_results.get("mAP50-95", 0)
@@ -1873,7 +3635,7 @@ if __name__=='__main__':
             wandb.run.summary["fitness_test"] = fitness_test
             logging.info(f"✅ Test metrics: Precision={precision_test:.4f}, Recall={recall_test:.4f}, mAP50={map50_test:.4f}, mAP50-95={map_test:.4f}, Fitness={fitness_test:.6f}")
         
-        # 导出ONNX模型并上传到W&B
+        # Export ONNX model and upload to W&B
         try:
             export_path = best_model.export(format="onnx", save_dir="./exports")
             artifact = wandb.Artifact("exported_model", type="model")

@@ -61,9 +61,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# ------------------ 輔助函式 ------------------
+# ------------------ Helper functions ------------------
 def open_writer(path: Path, fps: int, frame_size: Tuple[int, int]) -> cv2.VideoWriter:
-    """建立 VideoWriter 並檢查是否成功開啟。"""
+    """Create VideoWriter and check if it opened successfully."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(path), fourcc, fps, frame_size)
@@ -79,7 +79,7 @@ def open_writer(path: Path, fps: int, frame_size: Tuple[int, int]) -> cv2.VideoW
 
 
 def ensure_size(frame: np.ndarray, target_size: Tuple[int, int]) -> np.ndarray:
-    """若 frame 尺寸與目標尺寸不同，resize 成目標尺寸。"""
+    """If frame size differs from target size, resize to target size."""
     h, w = frame.shape[:2]
     tw, th = target_size
     if (w, h) != (tw, th):
@@ -88,7 +88,7 @@ def ensure_size(frame: np.ndarray, target_size: Tuple[int, int]) -> np.ndarray:
 
 
 def write_confusion_csv(path: Path, conf_mat: np.ndarray, class_names: Dict[int, str]):
-    """輸出 (K+1)x(K+1) 混淆矩陣到 CSV，最後一列/欄是 BG。"""
+    """Output (K+1)x(K+1) confusion matrix to CSV, last row/column is BG."""
     K = len(class_names)
     labels = [class_names[i] for i in range(K)] + ["BG"]
     with open(path, "w", newline="") as f:
@@ -102,7 +102,7 @@ def write_confusion_csv(path: Path, conf_mat: np.ndarray, class_names: Dict[int,
         writer.writerow(["Col_Sum"] + col_sum + [int(conf_mat.sum())])
 
 
-# ------------------ 主程式 ------------------
+# ------------------ Main program ------------------
 def main():
     warnings.filterwarnings("ignore")
     opt = parse_args()
@@ -128,7 +128,7 @@ def main():
     (out_root / "all").mkdir(parents=True, exist_ok=True)
     print(f"📁 輸出根目錄：{out_root.resolve()}")
 
-    # 欄位
+    # Fields
     fieldnames = [
         "Patient","Threshold","Class",
         "TP","FP","FN","TN","Support",
@@ -136,32 +136,32 @@ def main():
         "mAP50","mAP50_95"
     ]
 
-    # 讀資料
+    # Read data
     patient_root = opt.root / "patient_data"
     id_txt = opt.root / "subID_test.txt"
     patient_ids = [ln.strip() for ln in id_txt.read_text().splitlines() if ln.strip()]
     print(f"🧪 病患數：{len(patient_ids)}")
 
-    # 載入模型
+    # Load model
     print("🧠 載入 YOLO 權重中 ...")
     model = YOLO(str(opt.weights)).to(opt.device)
     print("✅ 模型載入完成")
 
-    # ALL 影片寫入器與尺寸
+    # ALL video writers and sizes
     writers_all = {"pred": None, "cmp": None, "pred_all": None, "cmp_all": None}
     all_size_pred: Tuple[int, int] = None      # (w, h)
     all_size_cmp: Tuple[int, int] = None       # (2w, h)
     all_frames_counter = {"pred":0, "cmp":0, "pred_all":0, "cmp_all":0}
 
-    # ALL 混淆矩陣
+    # ALL confusion matrices
     K = len(CLASS_NAMES); BG = K
     conf_total_primary = np.zeros((K + 1, K + 1), dtype=int)
     conf_total_all     = np.zeros((K + 1, K + 1), dtype=int)
 
-    # ALL mAP 收集
+    # ALL mAP collection
     all_preds_primary, all_preds_all, all_gts = [], [], []
 
-    # ========== 逐病患 ==========
+    # ========== Per patient ==========
     for p_idx, pid in enumerate(patient_ids, start=1):
         pid_dir = patient_root / pid
         img_paths = sorted([p for p in pid_dir.rglob("*") if p.suffix.lower() in opt.img_ext])
@@ -170,7 +170,7 @@ def main():
         out_pid = out_root / pid
         out_pid.mkdir(parents=True, exist_ok=True)
 
-        # 單一病患影片 writer 與尺寸
+        # Single patient video writer and size
         vw_pred = vw_cmp = vw_pred_all = vw_cmp_all = None
         size_pred: Tuple[int, int] = None
         size_cmp : Tuple[int, int] = None
@@ -189,11 +189,11 @@ def main():
 
             h, w = img.shape[:2]
 
-            # 推論
+            # Inference
             res_primary = model(img, conf=opt.primary_conf, verbose=False)[0]
             res_all     = model(img, conf=opt.showall_conf,  verbose=False)[0]
 
-            # 取出 detection
+            # Extract detection
             pb   = res_primary.boxes.xyxy.cpu().numpy() if res_primary.boxes is not None else np.empty((0,4))
             pc   = res_primary.boxes.cls.cpu().numpy()   if res_primary.boxes is not None else np.empty((0,))
             psc  = res_primary.boxes.conf.cpu().numpy()  if res_primary.boxes is not None else np.empty((0,))
@@ -202,11 +202,11 @@ def main():
             pc_all  = res_all.boxes.cls.cpu().numpy()   if res_all.boxes is not None else np.empty((0,))
             psc_all = res_all.boxes.conf.cpu().numpy()  if res_all.boxes is not None else np.empty((0,))
 
-            # 每類別保留最大信心框
+            # Keep maximum confidence box for each class
             pb, pc, psc = keep_max_per_class(pb, pc, psc)
             pb_all, pc_all, psc_all = keep_max_per_class(pb_all, pc_all, psc_all)
 
-            # 讀 GT
+            # Read GT
             gt_boxes, gt_cls = [], []
             label_path = img_path.with_suffix(".txt")
             if label_path.exists():
@@ -226,7 +226,7 @@ def main():
             gt_boxes = np.array(gt_boxes)
             image_id = f"{pid}/{img_path.name}"
 
-            # 收集 mAP
+            # Collect mAP
             all_preds_primary.append(dict(image_id=image_id, boxes=pb.copy(),     scores=psc.copy(),     classes=pc.copy()))
             all_preds_all.append(   dict(image_id=image_id, boxes=pb_all.copy(), scores=psc_all.copy(), classes=pc_all.copy()))
             all_gts.append(dict(image_id=image_id, boxes=gt_boxes.copy(), classes=list(map(int, gt_cls))))
@@ -235,13 +235,13 @@ def main():
             preds_all_pid.append(   dict(image_id=image_id, boxes=pb_all.copy(), scores=psc_all.copy(), classes=pc_all.copy()))
             gts_pid.append(dict(image_id=image_id, boxes=gt_boxes.copy(), classes=list(map(int, gt_cls))))
 
-            # 混淆矩陣
+            # Confusion matrix
             update_confusion(conf_primary_pid, pb,     pc,     psc,     gt_boxes, gt_cls, opt.iou_thres, K)
             update_confusion(conf_all_pid,     pb_all, pc_all, psc_all, gt_boxes, gt_cls, opt.iou_thres, K)
 
-            # 視覺化 frame
+            # Visualize frame
             if is_seg:
-                # 這裡僅建立 bbox 視覺化，也可選擇將 mask 繪出
+                # Only create bbox visualization here, can also choose to draw mask
                 pred_img     = draw_boxes(img.copy(), pb,     pc,     psc,     COLORS, CLASS_NAMES, pid)
                 pred_all_img = draw_boxes(img.copy(), pb_all, pc_all, psc_all, COLORS, CLASS_NAMES, pid)
                 gt_img       = draw_boxes(img.copy(), gt_boxes, gt_cls, [1]*len(gt_cls), COLORS, CLASS_NAMES, pid)
@@ -253,7 +253,7 @@ def main():
             cmp_img     = np.hstack([pred_img, gt_img])
             cmp_all_img = np.hstack([pred_all_img, gt_img])
 
-            # ---- 初始化單一病患影片 ----
+            # ---- Initialize single patient video ----
             if vw_pred is None:
                 size_pred = (pred_img.shape[1], pred_img.shape[0])    # (w, h)
                 size_cmp  = (cmp_img.shape[1],  cmp_img.shape[0])
@@ -262,7 +262,7 @@ def main():
                 vw_pred_all = open_writer(out_pid / "pred_all.mp4",    opt.fps, size_pred)
                 vw_cmp_all  = open_writer(out_pid / "compare_all.mp4", opt.fps, size_cmp)
 
-            # ---- 初始化 ALL 聚合影片 ----
+            # ---- Initialize ALL aggregated video ----
             if writers_all["pred"] is None:
                 all_size_pred = size_pred
                 all_size_cmp  = size_cmp
@@ -271,7 +271,7 @@ def main():
                 writers_all["pred_all"] = open_writer(out_root / "all/pred_all.mp4",    opt.fps, all_size_pred)
                 writers_all["cmp_all"]  = open_writer(out_root / "all/compare_all.mp4", opt.fps, all_size_cmp)
 
-            # ---- 寫入影片（若尺寸不同就 resize）----
+            # ---- Write video (resize if size differs) ----
             vw_pred.write(ensure_size(pred_img,     size_pred));     patient_frames["pred"]     += 1
             vw_cmp.write( ensure_size(cmp_img,      size_cmp));      patient_frames["cmp"]      += 1
             vw_pred_all.write(ensure_size(pred_all_img, size_pred)); patient_frames["pred_all"] += 1
@@ -282,17 +282,17 @@ def main():
             writers_all["pred_all"].write(ensure_size(pred_all_img, all_size_pred)); all_frames_counter["pred_all"] += 1
             writers_all["cmp_all"].write( ensure_size(cmp_all_img,  all_size_cmp));  all_frames_counter["cmp_all"]  += 1
 
-        # 關閉單一病患影片
+        # Close single patient video
         for vw in [vw_pred, vw_cmp, vw_pred_all, vw_cmp_all]:
             if vw: vw.release()
         print(f"🎞 病患 {pid} 影片完成：pred={patient_frames['pred']} | cmp={patient_frames['cmp']} | "
               f"pred_all={patient_frames['pred_all']} | cmp_all={patient_frames['cmp_all']}")
 
-        # 疊加至 ALL
+        # Overlay to ALL
         conf_total_primary += conf_primary_pid
         conf_total_all     += conf_all_pid
 
-        # per-patient mAP 與度量
+        # per-patient mAP and metrics
         map_primary_pid = compute_map(preds_primary_pid, gts_pid, class_ids)
         map_all_pid     = compute_map(preds_all_pid,    gts_pid, class_ids)
         stats_primary = stats_from_confusion(conf_primary_pid, K)
@@ -371,7 +371,7 @@ def main():
                 AP="", mAP50="", mAP50_95=""
             ))
 
-    # ========== ALL 層級 ==========
+    # ========== ALL level ==========
     map_primary = compute_map(all_preds_primary, all_gts, class_ids)
     map_all     = compute_map(all_preds_all,    all_gts, class_ids)
     stats_total_primary = stats_from_confusion(conf_total_primary, K)
@@ -449,7 +449,7 @@ def main():
             AP="", mAP50="", mAP50_95=""
         ))
 
-    # 關閉 ALL 影片
+    # Close ALL video
     for name, vw in writers_all.items():
         if vw:
             vw.release()

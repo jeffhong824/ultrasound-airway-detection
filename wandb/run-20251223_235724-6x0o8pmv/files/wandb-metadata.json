@@ -1,0 +1,66 @@
+{
+  "os": "Windows-10-10.0.26100-SP0",
+  "python": "CPython 3.11.12",
+  "startedAt": "2025-12-23T15:57:24.937452Z",
+  "args": [
+    "yolo11n",
+    "det_123",
+    "--db_version=3",
+    "--es",
+    "--batch=16",
+    "--epochs=10",
+    "--device",
+    "cuda:0",
+    "--seed",
+    "42",
+    "--wandb",
+    "--project=ultrasound-det_123_ES-v3-4090",
+    "--exp_name=exp5 hmd_loss",
+    "--use_hmd_loss",
+    "--hmd_loss_weight",
+    "10000",
+    "--hmd_penalty_single",
+    "500.0",
+    "--hmd_penalty_none",
+    "1000.0",
+    "--hmd_penalty_coeff",
+    "0.5"
+  ],
+  "program": "D:\\workplace\\project_management\\github_project\\ultrasound-airway-detection2\\ultralytics\\mycodes\\train_yolo.py",
+  "codePath": "ultralytics\\mycodes\\train_yolo.py",
+  "git": {
+    "remote": "https://github.com/jeffhong824/ultrasound-airway-detection.git",
+    "commit": "344b3aa37001cd94f1a6b74ec45cf3ce374d848d"
+  },
+  "email": "jeffhong824@gmail.com",
+  "root": "D:\\workplace\\project_management\\github_project\\ultrasound-airway-detection2",
+  "host": "DESKTOP-GCR7AH7",
+  "executable": "D:\\Program\\miniforge3\\envs\\yolo_dev_py311\\python.exe",
+  "codePathLocal": "ultralytics\\mycodes\\train_yolo.py",
+  "cpu_count": 24,
+  "cpu_count_logical": 32,
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "1000186310656",
+      "used": "237745086464"
+    }
+  },
+  "memory": {
+    "total": "68541538304"
+  },
+  "cpu": {
+    "count": 24,
+    "countLogical": 32
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "memoryTotal": "25757220864",
+      "cudaCores": 16384,
+      "architecture": "Ada"
+    }
+  ],
+  "cudaVersion": "12.6"
+}

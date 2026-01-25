@@ -1,0 +1,151 @@
+_wandb:
+    value:
+        cli_version: 0.19.9
+        m: []
+        python_version: 3.11.12
+        t:
+            "1":
+                - 1
+                - 55
+                - 105
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 55
+                - 105
+            "3":
+                - 13
+                - 16
+                - 23
+                - 55
+                - 61
+                - 62
+            "4": 3.11.12
+            "5": 0.19.9
+            "8":
+                - 3
+                - 5
+            "12": 0.19.9
+            "13": windows-amd64
+agnostic_nms:
+    value: false
+amp:
+    value: true
+batch:
+    value: 16
+box:
+    value: 7.5
+cache:
+    value: null
+close_mosaic:
+    value: 0
+cls:
+    value: 0.5
+conf:
+    value: null
+copy_paste:
+    value: 0
+cos_lr:
+    value: false
+database:
+    value: det_123
+db_version:
+    value: 3
+degrees:
+    value: 0
+deterministic:
+    value: true
+device:
+    value: cuda:0
+dfl:
+    value: 1.5
+dim_weights:
+    value:
+        - 1
+        - 1
+        - 1
+        - 1
+dropout:
+    value: 0
+epochs:
+    value: 2
+es:
+    value: true
+exp_name:
+    value: exp5 hmd_loss
+fliplr:
+    value: 0.5
+flipud:
+    value: 0
+focal_alpha:
+    value: null
+focal_gamma:
+    value: null
+half:
+    value: false
+hmd_loss_weight:
+    value: 0.1
+hmd_penalty_coeff:
+    value: 0.5
+hmd_penalty_none:
+    value: 1000
+hmd_penalty_single:
+    value: 500
+hsv_h:
+    value: 0
+hsv_s:
+    value: 0.7
+hsv_v:
+    value: 0.4
+imgsz:
+    value: 640
+iou:
+    value: null
+lr0:
+    value: 0.01
+lrf:
+    value: 0.01
+max_det:
+    value: null
+mixup:
+    value: 0
+model:
+    value: yolo11n
+momentum:
+    value: 0.937
+mosaic:
+    value: 1
+optimizer:
+    value: AdamW
+patience:
+    value: 100
+perspective:
+    value: 0
+rect:
+    value: false
+scale:
+    value: 0.5
+seed:
+    value: 42
+shear:
+    value: 0
+translate:
+    value: 0.1
+use_dim_weights:
+    value: false
+use_focal_loss:
+    value: false
+use_hmd_loss:
+    value: true
+warmup_bias_lr:
+    value: 0.1
+warmup_epochs:
+    value: 3
+warmup_momentum:
+    value: 0.8
+weight_decay:
+    value: 0.0005
+workers:
+    value: 8
