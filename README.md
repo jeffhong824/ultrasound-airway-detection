@@ -2293,6 +2293,29 @@ gdown 1f8tmI2Jo9rMTPMl0X4cYcVSzHguckAs8 -O ultralytics/weights/yolo11n.pt --fuzz
 **Weights link / 權重連結：**
 - yolo11n.pt: https://drive.google.com/file/d/1f8tmI2Jo9rMTPMl0X4cYcVSzHguckAs8/view
 
+### Download DICOM PixelSpacing Dictionary / 下載 DICOM PixelSpacing 字典
+
+Required for HMD metrics calculation in millimeters. Required for video visualization with HMD metrics.
+
+用於計算毫米級別的 HMD 指標。視頻可視化中顯示 HMD 指標時需要此文件。
+
+```bash
+# Create dicom_dataset directory if it doesn't exist
+mkdir -p dicom_dataset
+
+# Download Dicom_PixelSpacing_DA.joblib (with progress bar / 顯示進度條)
+gdown 11N-QGw_7IdIlA4RpMvpl7LTxoWGm0bZC -O dicom_dataset/Dicom_PixelSpacing_DA.joblib --fuzzy
+```
+
+**PixelSpacing link / PixelSpacing 連結：**
+- Dicom_PixelSpacing_DA.joblib: https://drive.google.com/file/d/11N-QGw_7IdIlA4RpMvpl7LTxoWGm0bZC/view?usp=sharing
+
+**Note / 注意：**
+- This file is required for HMD metrics calculation in millimeters (mm) / 此文件用於計算毫米級別的 HMD 指標
+- Used by `train_yolo.py` for validation/test HMD metrics / 由 `train_yolo.py` 用於驗證/測試 HMD 指標
+- Used by `visualize_predictions_video.py` for video visualization / 由 `visualize_predictions_video.py` 用於視頻可視化
+- The file is a joblib format dictionary, no extraction needed / 文件為 joblib 格式字典，無需解壓
+
 **Note / 注意：**
 - `--fuzzy` required for files >100MB / 大檔案需要 `--fuzzy` 參數
 - Extraction uses Python + tqdm for progress bar (quiet, no verbose logs) / 解壓使用 Python + tqdm 顯示進度條（安靜模式，無冗長日誌）
@@ -2455,6 +2478,56 @@ python evaluate/calculate_hmd_from_yolo.py \
 - Mean Error (ME)
 - Mean Absolute Error (MAE)
 - Root Mean Squared Error (RMSE)
+
+#### Step 4: Generate Video Visualization / 生成視頻可視化
+
+Generate a video showing ground truth and predicted bounding boxes with HMD metrics:
+
+生成視頻顯示 Ground Truth 和預測的邊界框及 HMD 指標：
+
+```bash
+# From project root directory
+python ultralytics/mycodes/visualize_predictions_video.py \
+    ultralytics/runs/train/yolo11n-det_123-v3-exp0-reference-baseline/weights/best.pt \
+    --test_txt yolo_dataset/det_123/v3/test_ES.txt \
+    --output runs/visualize/predictions_video.mp4 \
+    --conf 0.25 \
+    --fps 10.0
+```
+
+**Parameters / 參數**:
+- `model_path`: Path to trained model weights (best.pt) / 訓練好的模型權重路徑
+- `--test_txt`: Path to test dataset txt file (default: `yolo_dataset/det_123/v3/test_ES.txt`) / 測試集 txt 文件路徑
+- `--output`: Output video path (default: `runs/visualize/predictions_video.mp4`) / 輸出視頻路徑
+- `--conf`: Confidence threshold (default: 0.25) / 置信度閾值
+- `--fps`: Video FPS (default: 10.0) / 視頻幀率
+- `--max_images`: Maximum number of images to process (None for all) / 處理的最大圖像數量（None 表示全部）
+- `--pixel_spacing_path`: Path to pixel spacing dictionary (default: `dicom_dataset/Dicom_PixelSpacing_DA.joblib`) / PixelSpacing 字典路徑
+
+**Output / 輸出**: 
+- **Video file / 視頻文件**: `runs/visualize/predictions_video.mp4` (default) / 默認路徑
+- The script automatically creates the output directory if it doesn't exist / 腳本會自動創建輸出目錄（如果不存在）
+
+**Video Features / 視頻特性**:
+- **Ground Truth Boxes / Ground Truth 邊界框**:
+  - Mentum (GT): Green box / 綠色框
+  - Hyoid (GT): Yellow box / 黃色框
+- **Predicted Boxes / 預測邊界框**:
+  - Mentum (Pred): Orange box with confidence score / 橙色框（帶置信度）
+  - Hyoid (Pred): Magenta box with confidence score / 洋紅色框（帶置信度）
+- **HMD Visualization / HMD 可視化**:
+  - GT HMD line: Green line / 綠色線
+  - Pred HMD line: Blue line / 藍色線
+  - HMD values displayed in pixels and millimeters / HMD 值以像素和毫米顯示
+- **Text Overlay / 文字疊加**:
+  - HMD error (pixel and mm) / HMD 誤差（像素和毫米）
+  - Class labels (Mentum, Hyoid) / 類別標籤
+  - Confidence scores for predictions / 預測的置信度分數
+
+**Note / 注意**:
+- Each frame shows at most one bounding box per class (highest confidence for predictions, first box for GT) / 每個幀每個類別最多顯示一個邊界框（預測使用最高置信度，GT 使用第一個框）
+- The script automatically matches pixel spacing from DICOM metadata / 腳本會自動從 DICOM 元數據匹配像素間距
+- If pixel spacing is not found, only pixel-based HMD is displayed / 如果找不到像素間距，僅顯示基於像素的 HMD
 
 ---
 
