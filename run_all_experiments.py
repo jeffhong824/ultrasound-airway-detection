@@ -21,6 +21,7 @@ import datetime
 import os
 import logging
 import signal
+import platform
 from pathlib import Path
 
 # Setup logging
@@ -92,7 +93,8 @@ def run_experiment(exp_name, extra_args, config, log_file, skip_failed=False, ba
             encoding="utf-8",
             errors="replace",
             bufsize=1,  # Line buffered
-            universal_newlines=True
+            universal_newlines=True,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
         )
         
         # Set up signal handler to forward SIGINT to child process
@@ -241,23 +243,11 @@ def main():
     
     if args.config == "4090":
         experiments = [
-            # exp0 baseline
-            # ("exp0 baseline", []),
-            
             # exp0 baseline+keep_top_conf_per_class
             ("exp0 baseline+keep_top_conf_per_class", [
                 "--keep_top_conf_per_class",
                 "--conf_low", "0"
             ]),
-            
-            # exp1-1 data_aug
-            # ("exp1-1 data_aug", [
-            #     "--scale", "0.7",
-            #     "--translate", "0.15",
-            #     "--hsv_s", "0.8",
-            #     "--hsv_v", "0.5",
-            #     "--hsv_h", "0.0"
-            # ]),
             
             # exp1-1 data_aug+keep_top_conf_per_class
             ("exp1-1 data_aug+keep_top_conf_per_class", [
@@ -270,13 +260,6 @@ def main():
                 "--conf_low", "0"
             ]),
             
-            # exp1-2 ultrasound_aug
-            # ("exp1-2 ultrasound_aug", [
-            #     "--use_ultrasound_aug",
-            #     "--ultrasound_speckle_var", "0.1",
-            #     "--ultrasound_attenuation_factor", "0.3"
-            # ]),
-            
             # exp1-2 ultrasound_aug+keep_top_conf_per_class
             ("exp1-2 ultrasound_aug+keep_top_conf_per_class", [
                 "--use_ultrasound_aug",
@@ -285,13 +268,6 @@ def main():
                 "--keep_top_conf_per_class",
                 "--conf_low", "0"
             ]),
-            
-            # exp2 loss_weights
-            # ("exp2 loss_weights", [
-            #     "--box", "8.5",
-            #     "--dfl", "2.0",
-            #     "--cls", "0.6"
-            # ]),
             
             # exp2 loss_weights+keep_top_conf_per_class
             ("exp2 loss_weights+keep_top_conf_per_class", [
@@ -302,13 +278,6 @@ def main():
                 "--conf_low", "0"
             ]),
             
-            # exp3 focal_loss
-            # ("exp3 focal_loss", [
-            #     "--use_focal_loss",
-            #     "--focal_gamma", "1.5",
-            #     "--focal_alpha", "0.25"
-            # ]),
-            
             # exp3 focal_loss+keep_top_conf_per_class
             ("exp3 focal_loss+keep_top_conf_per_class", [
                 "--use_focal_loss",
@@ -318,12 +287,6 @@ def main():
                 "--conf_low", "0"
             ]),
             
-            # exp4 dim_weights
-            # ("exp4 dim_weights", [
-            #     "--use_dim_weights",
-            #     "--dim_weights", "5.0", "1.0", "5.0", "1.0"
-            # ]),
-            
             # exp4 dim_weights+keep_top_conf_per_class
             ("exp4 dim_weights+keep_top_conf_per_class", [
                 "--use_dim_weights",
@@ -331,13 +294,6 @@ def main():
                 "--keep_top_conf_per_class",
                 "--conf_low", "0"
             ]),
-            
-            # exp5-1 hmd_loss_pixel
-            # ("exp5-1 hmd_loss_pixel", [
-            #     "--use_hmd_loss",
-            #     "--hmd_loss_weight", "0.5",
-            #     "--hmd_penalty_coeff", "0.5"
-            # ]),
             
             # exp5-1 hmd_loss_pixel+keep_top_conf_per_class
             ("exp5-1 hmd_loss_pixel+keep_top_conf_per_class", [
@@ -348,31 +304,6 @@ def main():
                 "--conf_low", "0"
             ]),
             
-            # exp5-2 hmd_loss_mm
-            # ("exp5-2 hmd_loss_mm", [
-            #     "--use_hmd_loss",
-            #     "--hmd_use_mm",
-            #     "--hmd_loss_weight", "0.5",
-            #     "--hmd_penalty_coeff", "0.5"
-            # ]),
-            
-            # # exp5-2 hmd_loss_mm+keep_top_conf_per_class
-            # ("exp5-2 hmd_loss_mm+keep_top_conf_per_class", [
-            #     "--use_hmd_loss",
-            #     "--hmd_use_mm",
-            #     "--hmd_loss_weight", "0.5",
-            #     "--hmd_penalty_coeff", "0.5",
-            #     "--keep_top_conf_per_class",
-            #     "--conf_low", "0.1"
-            # ]),
-            
-            # exp6-1 warmup_optimized
-            # ("exp6-1 warmup_optimized", [
-            #     "--warmup_epochs", "5.0",
-            #     "--warmup_momentum", "0.9",
-            #     "--warmup_bias_lr", "0.05"
-            # ]),
-            
             # exp6-1 warmup_optimized+keep_top_conf_per_class
             ("exp6-1 warmup_optimized+keep_top_conf_per_class", [
                 "--warmup_epochs", "5.0",
@@ -381,14 +312,6 @@ def main():
                 "--keep_top_conf_per_class",
                 "--conf_low", "0"
             ]),
-            
-            # exp6-2 warmup_cosine_restart
-            # ("exp6-2 warmup_cosine_restart", [
-            #     "--use_cosine_restart",
-            #     "--cosine_restart_t0", "10",
-            #     "--cosine_restart_t_mult", "2",
-            #     "--warmup_epochs", "5.0"
-            # ]),
             
             # exp6-2 warmup_cosine_restart+keep_top_conf_per_class
             ("exp6-2 warmup_cosine_restart+keep_top_conf_per_class", [
@@ -400,11 +323,6 @@ def main():
                 "--conf_low", "0"
             ]),
             
-            # exp7-1 siou
-            # ("exp7-1 siou", [
-            #     "--iou_type", "SIoU"
-            # ]),
-            
             # exp7-1 siou+keep_top_conf_per_class
             ("exp7-1 siou+keep_top_conf_per_class", [
                 "--iou_type", "SIoU",
@@ -412,22 +330,12 @@ def main():
                 "--conf_low", "0"
             ]),
             
-            # exp7-2 eiou
-            # ("exp7-2 eiou", [
-            #     "--iou_type", "EIoU"
-            # ]),
-            
             # exp7-2 eiou+keep_top_conf_per_class
             ("exp7-2 eiou+keep_top_conf_per_class", [
                 "--iou_type", "EIoU",
                 "--keep_top_conf_per_class",
                 "--conf_low", "0"
             ]),
-            
-            # exp7-3 diou
-            # ("exp7-3 diou", [
-            #     "--iou_type", "DIoU"
-            # ]),
             
             # exp7-3 diou+keep_top_conf_per_class
             ("exp7-3 diou+keep_top_conf_per_class", [
@@ -443,92 +351,106 @@ def main():
     
     elif args.config == "h200":
         experiments = [
-            # exp0 baseline
-            ("exp0 baseline", [
+            # exp0 baseline+keep_top_conf_per_class
+            ("exp0 baseline+keep_top_conf_per_class", [
                 "--keep_top_conf_per_class",
                 "--conf_low", "0"
             ]),
             
-            # exp1-1 data_aug
-            # ("exp1-1 data_aug", [
-            #     "--scale", "0.7",
-            #     "--translate", "0.15",
-            #     "--hsv_s", "0.8",
-            #     "--hsv_v", "0.5",
-            #     "--hsv_h", "0.0"
-            # ]),
+            # exp1-1 data_aug+keep_top_conf_per_class
+            ("exp1-1 data_aug+keep_top_conf_per_class", [
+                "--scale", "0.7",
+                "--translate", "0.15",
+                "--hsv_s", "0.8",
+                "--hsv_v", "0.5",
+                "--hsv_h", "0.0",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp1-2 ultrasound_aug
-            # ("exp1-2 ultrasound_aug", [
-            #     "--use_ultrasound_aug",
-            #     "--ultrasound_speckle_var", "0.1",
-            #     "--ultrasound_attenuation_factor", "0.3"
-            # ]),
+            # exp1-2 ultrasound_aug+keep_top_conf_per_class
+            ("exp1-2 ultrasound_aug+keep_top_conf_per_class", [
+                "--use_ultrasound_aug",
+                "--ultrasound_speckle_var", "0.1",
+                "--ultrasound_attenuation_factor", "0.3",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp2 loss_weights
-            # ("exp2 loss_weights", [
-            #     "--box", "8.5",
-            #     "--dfl", "2.0",
-            #     "--cls", "0.6"
-            # ]),
+            # exp2 loss_weights+keep_top_conf_per_class
+            ("exp2 loss_weights+keep_top_conf_per_class", [
+                "--box", "8.5",
+                "--dfl", "2.0",
+                "--cls", "0.6",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp3 focal_loss
-            # ("exp3 focal_loss", [
-            #     "--use_focal_loss",
-            #     "--focal_gamma", "1.5",
-            #     "--focal_alpha", "0.25"
-            # ]),
+            # exp3 focal_loss+keep_top_conf_per_class
+            ("exp3 focal_loss+keep_top_conf_per_class", [
+                "--use_focal_loss",
+                "--focal_gamma", "1.5",
+                "--focal_alpha", "0.25",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp4 dim_weights
-            # ("exp4 dim_weights", [
-            #     "--use_dim_weights",
-            #     "--dim_weights", "5.0", "1.0", "5.0", "1.0"
-            # ]),
+            # exp4 dim_weights+keep_top_conf_per_class
+            ("exp4 dim_weights+keep_top_conf_per_class", [
+                "--use_dim_weights",
+                "--dim_weights", "5.0", "1.0", "5.0", "1.0",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp5-1 hmd_loss_pixel
-            # ("exp5-1 hmd_loss_pixel", [
-            #     "--use_hmd_loss",
-            #     "--hmd_loss_weight", "0.5",
-            #     "--hmd_penalty_coeff", "0.5"
-            # ]),
+            # exp5-1 hmd_loss_pixel+keep_top_conf_per_class
+            ("exp5-1 hmd_loss_pixel+keep_top_conf_per_class", [
+                "--use_hmd_loss",
+                "--hmd_loss_weight", "0.5",
+                "--hmd_penalty_coeff", "0.5",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp5-2 hmd_loss_mm
-            # ("exp5-2 hmd_loss_mm", [
-            #     "--use_hmd_loss",
-            #     "--hmd_use_mm",
-            #     "--hmd_loss_weight", "0.5",
-            #     "--hmd_penalty_coeff", "0.5"
-            # ]),
+            # exp6-1 warmup_optimized+keep_top_conf_per_class
+            ("exp6-1 warmup_optimized+keep_top_conf_per_class", [
+                "--warmup_epochs", "5.0",
+                "--warmup_momentum", "0.9",
+                "--warmup_bias_lr", "0.05",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp6-1 warmup_optimized
-            # ("exp6-1 warmup_optimized", [
-            #     "--warmup_epochs", "5.0",
-            #     "--warmup_momentum", "0.9",
-            #     "--warmup_bias_lr", "0.05"
-            # ]),
+            # exp6-2 warmup_cosine_restart+keep_top_conf_per_class
+            ("exp6-2 warmup_cosine_restart+keep_top_conf_per_class", [
+                "--use_cosine_restart",
+                "--cosine_restart_t0", "10",
+                "--cosine_restart_t_mult", "2",
+                "--warmup_epochs", "5.0",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp6-2 warmup_cosine_restart
-            # ("exp6-2 warmup_cosine_restart", [
-            #     "--use_cosine_restart",
-            #     "--cosine_restart_t0", "10",
-            #     "--cosine_restart_t_mult", "2",
-            #     "--warmup_epochs", "5.0"
-            # ]),
+            # exp7-1 siou+keep_top_conf_per_class
+            ("exp7-1 siou+keep_top_conf_per_class", [
+                "--iou_type", "SIoU",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp7-1 siou
-            # ("exp7-1 siou", [
-            #     "--iou_type", "SIoU"
-            # ]),
+            # exp7-2 eiou+keep_top_conf_per_class
+            ("exp7-2 eiou+keep_top_conf_per_class", [
+                "--iou_type", "EIoU",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
             
-            # exp7-2 eiou
-            # ("exp7-2 eiou", [
-            #     "--iou_type", "EIoU"
-            # ]),
-            
-            # exp7-3 diou
-            # ("exp7-3 diou", [
-            #     "--iou_type", "DIoU"
-            # ]),
+            # exp7-3 diou+keep_top_conf_per_class
+            ("exp7-3 diou+keep_top_conf_per_class", [
+                "--iou_type", "DIoU",
+                "--keep_top_conf_per_class",
+                "--conf_low", "0"
+            ]),
         ]
     
     # Run experiments
@@ -569,4 +491,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

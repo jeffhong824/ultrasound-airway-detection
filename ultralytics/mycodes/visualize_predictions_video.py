@@ -8,6 +8,8 @@ import cv2
 import argparse
 import logging
 import numpy as np
+import yaml
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from ultralytics import YOLO
@@ -439,6 +441,247 @@ def process_image(img_path: Path, model: YOLO, pixel_spacing_dict: Dict[str, flo
     return annotated_img, metrics
 
 
+def calculate_and_print_statistics(model: YOLO, image_paths: List[Path], 
+                                   all_metrics: List[Dict], pixel_spacing_dict: Dict,
+                                   conf_threshold: float = 0.25):
+    """
+    Calculate and print comprehensive statistics including detection metrics and HMD metrics
+    """
+    from ultralytics.mycodes.hmd_utils import calculate_hmd_from_boxes
+    
+    # Use YOLO's validation functionality to calculate detection metrics
+    # Create a temporary dataset file for validation
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        temp_txt = f.name
+        for img_path in image_paths:
+            f.write(f"{img_path}\n")
+    
+    try:
+        # Run validation with the model
+        # Note: We need to ensure each class only has one box (highest confidence)
+        # This is already handled in process_image, but we need to do it for validation too
+        
+        # Collect all predictions and GT for manual calculation
+        all_gt_boxes = {0: [], 1: []}  # class_id -> list of boxes per image
+        all_pred_boxes = {0: [], 1: []}  # class_id -> list of (box, conf) per image
+        all_hmd_gt_pixel = []
+        all_hmd_pred_pixel = []
+        all_hmd_gt_mm = []
+        all_hmd_pred_mm = []
+        
+        for img_path, metrics in zip(image_paths, all_metrics):
+            # Load GT boxes
+            label_path = img_path.with_suffix('.txt')
+            if label_path.exists():
+                img = cv2.imread(str(img_path))
+                if img is not None:
+                    img_height, img_width = img.shape[:2]
+                    gt_boxes = parse_yolo_label(label_path, img_width, img_height)
+                    
+                    # Store GT boxes (one per class per image)
+                    for cls in [0, 1]:
+                        if cls in gt_boxes and len(gt_boxes[cls]) > 0:
+                            all_gt_boxes[cls].append(gt_boxes[cls][0])  # Take first one
+                        else:
+                            all_gt_boxes[cls].append(None)
+            
+            # Get predictions (already filtered to highest confidence per class in process_image)
+            # Re-run prediction to get all boxes, then filter
+            results = model.predict(str(img_path), conf=conf_threshold, verbose=False)
+            pred_boxes_img = {0: None, 1: None}  # Store only highest confidence per class
+            
+            if results and len(results) > 0:
+                result = results[0]
+                if result.boxes is not None:
+                    boxes_xyxy = result.boxes.xyxy.cpu().numpy()
+                    classes = result.boxes.cls.cpu().numpy().astype(int)
+                    confidences = result.boxes.conf.cpu().numpy()
+                    
+                    # Group by class and take highest confidence
+                    for cls in [0, 1]:
+                        cls_boxes = [(box, conf) for box, c, conf in zip(boxes_xyxy, classes, confidences) 
+                                    if c == cls]
+                        if cls_boxes:
+                            # Take highest confidence
+                            best_box, best_conf = max(cls_boxes, key=lambda x: x[1])
+                            pred_boxes_img[cls] = (best_box, best_conf)
+            
+            # Store predictions
+            for cls in [0, 1]:
+                all_pred_boxes[cls].append(pred_boxes_img[cls])
+            
+            # Store HMD values if available
+            if metrics.get('hmd_gt_pixel') is not None:
+                all_hmd_gt_pixel.append(metrics['hmd_gt_pixel'])
+                if metrics.get('hmd_gt_mm') is not None:
+                    all_hmd_gt_mm.append(metrics['hmd_gt_mm'])
+            
+            if metrics.get('hmd_pred_pixel') is not None:
+                all_hmd_pred_pixel.append(metrics['hmd_pred_pixel'])
+                if metrics.get('hmd_pred_mm') is not None:
+                    all_hmd_pred_mm.append(metrics['hmd_pred_mm'])
+        
+        # Use YOLO's validation to get detection metrics
+        # Create a dataset YAML file temporarily
+        dataset_yaml = {
+            'path': str(image_paths[0].parent.parent.parent.parent) if len(image_paths) > 0 else '.',
+            'val': temp_txt,
+            'names': {0: 'Mentum', 1: 'Hyoid'}
+        }
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            yaml.dump(dataset_yaml, f)
+            temp_yaml = f.name
+        
+        try:
+            # Run validation with keep_top_conf_per_class if supported
+            # Note: We need to ensure each class only has one box (highest confidence)
+            # This is handled by filtering predictions in process_image, but we also need it for validation
+            try:
+                # Try to use keep_top_conf_per_class if the model supports it
+                metrics_result = model.val(data=temp_yaml, conf=conf_threshold, verbose=False, plots=False,
+                                         keep_top_conf_per_class=True, conf_low=0.0)
+            except TypeError:
+                # If keep_top_conf_per_class is not supported, use regular validation
+                # The filtering will be done manually if needed
+                metrics_result = model.val(data=temp_yaml, conf=conf_threshold, verbose=False, plots=False)
+            
+            # Extract metrics
+            if hasattr(metrics_result, 'box'):
+                box_metrics = metrics_result.box
+                precision_all = float(box_metrics.mp) if hasattr(box_metrics, 'mp') else 0.0
+                recall_all = float(box_metrics.mr) if hasattr(box_metrics, 'mr') else 0.0
+                map50_all = float(box_metrics.map50) if hasattr(box_metrics, 'map50') else 0.0
+                map50_95_all = float(box_metrics.map) if hasattr(box_metrics, 'map') else 0.0
+                
+                # Per-class metrics
+                precision_per_class = {}
+                recall_per_class = {}
+                map50_per_class = {}
+                map50_95_per_class = {}
+                
+                if hasattr(box_metrics, 'maps'):
+                    maps = box_metrics.maps  # Per-class mAP50-95
+                    if hasattr(box_metrics, 'map50'):
+                        map50s = box_metrics.map50  # Per-class mAP50
+                    else:
+                        map50s = [0.0] * len(maps)
+                    
+                    for i, (map_val, map50_val) in enumerate(zip(maps, map50s)):
+                        map50_95_per_class[i] = float(map_val)
+                        map50_per_class[i] = float(map50_val)
+                
+                # Get per-class precision and recall if available
+                if hasattr(box_metrics, 'p'):
+                    p_per_class = box_metrics.p  # Per-class precision
+                    for i, p_val in enumerate(p_per_class):
+                        precision_per_class[i] = float(p_val)
+                
+                if hasattr(box_metrics, 'r'):
+                    r_per_class = box_metrics.r  # Per-class recall
+                    for i, r_val in enumerate(r_per_class):
+                        recall_per_class[i] = float(r_val)
+            else:
+                precision_all = recall_all = map50_all = map50_95_all = 0.0
+                precision_per_class = recall_per_class = map50_per_class = map50_95_per_class = {}
+            
+            # Calculate Fitness
+            fitness = map50_all * 0.1 + map50_95_all * 0.9
+            
+            # Print detection metrics
+            logging.info("\n" + "=" * 60)
+            logging.info("📊 Detection Metrics:")
+            logging.info("=" * 60)
+            logging.info(f"                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95)")
+            logging.info(f"                   all      {len(image_paths):5d}      {len(image_paths) * 2:5d}      {precision_all:.3f}      {recall_all:.3f}     {map50_all:.3f}     {map50_95_all:.3f}")
+            
+            # Per-class metrics
+            class_names = {0: 'Mentum', 1: 'Hyoid'}
+            for cls_id in [0, 1]:
+                cls_name = class_names[cls_id]
+                p = precision_per_class.get(cls_id, 0.0)
+                r = recall_per_class.get(cls_id, 0.0)
+                m50 = map50_per_class.get(cls_id, 0.0)
+                m50_95 = map50_95_per_class.get(cls_id, 0.0)
+                logging.info(f"                {cls_name:8s}      {len(image_paths):5d}      {len(image_paths):5d}      {p:.3f}      {r:.3f}     {m50:.3f}     {m50_95:.3f}")
+            
+            logging.info("\n📊 Additional Metrics:")
+            logging.info(f"   Precision: {precision_all:.4f} | Recall: {recall_all:.4f}")
+            logging.info(f"   mAP50: {map50_all:.4f} | mAP50-95: {map50_95_all:.4f} | Fitness: {fitness:.4f}")
+            
+        finally:
+            # Clean up temp files
+            try:
+                os.unlink(temp_yaml)
+            except:
+                pass
+        
+        # Calculate HMD metrics
+        detection_rate = 0.0
+        rmse_pixel = 0.0
+        mae_pixel = 0.0
+        overall_score_pixel = 0.0
+        rmse_mm = 0.0
+        mae_mm = 0.0
+        overall_score_mm = 0.0
+        
+        # Count images with both GT and both Pred
+        both_gt_and_pred_count = sum(1 for m in all_metrics 
+                                    if m.get('mentum_gt_count', 0) > 0 and m.get('hyoid_gt_count', 0) > 0
+                                    and m.get('mentum_pred_count', 0) > 0 and m.get('hyoid_pred_count', 0) > 0)
+        total_images = len(all_metrics)
+        
+        if total_images > 0:
+            detection_rate = both_gt_and_pred_count / total_images
+        
+        # Calculate HMD errors (only for images where both GT and both Pred exist)
+        if all_hmd_gt_pixel and all_hmd_pred_pixel and len(all_hmd_gt_pixel) == len(all_hmd_pred_pixel):
+            hmd_errors_pixel = [abs(gt - pred) for gt, pred in zip(all_hmd_gt_pixel, all_hmd_pred_pixel)]
+            if hmd_errors_pixel:
+                rmse_pixel = np.sqrt(np.mean(np.array(hmd_errors_pixel)**2))
+                mae_pixel = np.mean(hmd_errors_pixel)
+                overall_score_pixel = detection_rate / (1 + rmse_pixel / 1000.0)
+        
+        if all_hmd_gt_mm and all_hmd_pred_mm and len(all_hmd_gt_mm) == len(all_hmd_pred_mm):
+            hmd_errors_mm = [abs(gt - pred) for gt, pred in zip(all_hmd_gt_mm, all_hmd_pred_mm)]
+            if hmd_errors_mm:
+                rmse_mm = np.sqrt(np.mean(np.array(hmd_errors_mm)**2))
+                mae_mm = np.mean(hmd_errors_mm)
+                overall_score_mm = detection_rate / (1 + rmse_mm / 100.0)
+        
+        # Print HMD metrics
+        logging.info("\n📏 HMD Metrics (det_123):")
+        logging.info(f"   Detection_Rate: {detection_rate:.4f}")
+        logging.info("\n   📊 No Penalty (only both detected cases, all based on real boxes):")
+        if rmse_pixel > 0:
+            logging.info(f"      RMSE_HMD (pixel): {rmse_pixel:.2f} px")
+            logging.info(f"      MAE_HMD (pixel): {mae_pixel:.2f} px")
+            logging.info(f"      Overall_Score (pixel): {overall_score_pixel:.4f}")
+        else:
+            logging.info(f"      RMSE_HMD (pixel): N/A (no both detected cases)")
+            logging.info(f"      MAE_HMD (pixel): N/A (no both detected cases)")
+            logging.info(f"      Overall_Score (pixel): N/A")
+        
+        logging.info("\n   📏 No Penalty (mm):")
+        if rmse_mm > 0:
+            logging.info(f"      RMSE_HMD (mm): {rmse_mm:.2f} mm")
+            logging.info(f"      MAE_HMD (mm): {mae_mm:.2f} mm")
+            logging.info(f"      Overall_Score (mm): {overall_score_mm:.4f}")
+        else:
+            logging.info(f"      RMSE_HMD (mm): N/A (no both detected cases)")
+            logging.info(f"      MAE_HMD (mm): N/A (no both detected cases)")
+            logging.info(f"      Overall_Score (mm): N/A")
+        
+        logging.info("=" * 60)
+        
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(temp_txt)
+        except:
+            pass
+
+
 def create_video_from_images(image_list: List[np.ndarray], output_path: Path, 
                             fps: float = 10.0):
     """
@@ -556,29 +799,8 @@ def main():
     logging.info(f"🎬 Creating video with {len(annotated_images)} frames...")
     create_video_from_images(annotated_images, output_path, args.fps)
     
-    # Print summary statistics
-    logging.info("\n📊 Summary Statistics:")
-    total_images = len(all_metrics)
-    both_gt_count = sum(1 for m in all_metrics if m['mentum_gt_count'] > 0 and m['hyoid_gt_count'] > 0)
-    both_pred_count = sum(1 for m in all_metrics if m['mentum_pred_count'] > 0 and m['hyoid_pred_count'] > 0)
-    both_detected_count = sum(1 for m in all_metrics if (m['mentum_gt_count'] > 0 and m['hyoid_gt_count'] > 0 and 
-                                                         m['mentum_pred_count'] > 0 and m['hyoid_pred_count'] > 0))
-    
-    logging.info(f"  Total images: {total_images}")
-    logging.info(f"  Images with both GT: {both_gt_count}")
-    logging.info(f"  Images with both Pred: {both_pred_count}")
-    logging.info(f"  Images with both GT and Pred: {both_detected_count}")
-    
-    if both_detected_count > 0:
-        hmd_errors_pixel = [m['hmd_error_pixel'] for m in all_metrics if m['hmd_error_pixel'] is not None]
-        hmd_errors_mm = [m['hmd_error_mm'] for m in all_metrics if m['hmd_error_mm'] is not None]
-        
-        if hmd_errors_pixel:
-            logging.info(f"  HMD Error (pixel): Mean={np.mean(hmd_errors_pixel):.2f}, "
-                        f"RMSE={np.sqrt(np.mean(np.array(hmd_errors_pixel)**2)):.2f}")
-        if hmd_errors_mm:
-            logging.info(f"  HMD Error (mm): Mean={np.mean(hmd_errors_mm):.2f}, "
-                        f"RMSE={np.sqrt(np.mean(np.array(hmd_errors_mm)**2)):.2f}")
+    # Calculate and print comprehensive statistics
+    calculate_and_print_statistics(model, image_paths, all_metrics, pixel_spacing_dict, args.conf)
     
     logging.info(f"\n✅ Video visualization complete: {output_path}")
 
